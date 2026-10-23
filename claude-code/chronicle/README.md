@@ -26,9 +26,9 @@ A conversation with an AI lives in a window of limited size. When it is nearly f
 
 ## Install
 
-Linux and macOS. It needs [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) on the path for `recall`, and `sh`, `mkdir` and `cat`, which every Linux and macOS has. Windows is not supported yet.
+Linux, macOS and Windows. On Linux and macOS it needs [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) on the path for `recall`, and `sh`, `mkdir` and `cat`, which every Linux and macOS has. On Windows it needs nothing extra: the mirror is appended through `powershell.exe` (always present) and the archive is listed, searched and read through the engine's own file API, so ripgrep is not used there.
 
-1. Copy this folder somewhere permanent, for example `~/.claude/mods/chronicle`.
+1. Copy this folder somewhere permanent, for example `~/.claude/mods/chronicle` (Windows: `%USERPROFILE%\.claude\mods\chronicle`).
 2. Load it: set `CLAUDE_CODE_PLUGIN_DIRS=/path/to/chronicle` (colon-separate several) in the environment that starts Claude Code, or pass `--plugin-dir /path/to/chronicle`.
 3. Restart Claude Code.
 
@@ -57,7 +57,7 @@ It runs with no configuration file at all. Rows are mirrored to `~/.chronicle/ar
 | `memories.gapRawMaxTokens` | `12000` | A stretch not yet covered by a memory is kept raw up to this size; a bigger one is summarised. |
 | `squish.enabled` | `true` | Registers `/squish`. |
 | `contextLine.enabled`, `warnAt`, `urgentAt` | `true`, `75`, `90` | The meter. |
-| `tools.rgPath` | `rg` | The ripgrep binary. |
+| `tools.rgPath` | `rg` | The ripgrep binary (Linux and macOS; ignored on Windows). |
 | `archive.command` | none | See "Archive". |
 | `archive.timeoutMs` | `30000` | How long the archive command may run. |
 | `legacyToolNames` | none | Names this tool had under an earlier plugin name, for example `["mcp__old-name__recall"]`, so rows mirrored then are still recognised. |
@@ -135,7 +135,7 @@ Tested against Claude Code 2.1.301.
 - Redaction is pattern-based. Over-redaction is accepted (a few characters of record are lost); a leaked key can only be rotated. It is not a substitute for keeping the mirror private.
 - Memory formation (off by default) spends model calls in the background.
 - `/squish` starts `/compact` just after answering, because Claude Code refuses to run a command from inside a command hook.
-- Session recall and assembly shell out to `rg`, `sh`, `mkdir` and `cat`: Linux and macOS only.
+- On Linux and macOS, session recall and assembly shell out to `rg`, `sh`, `mkdir` and `cat`. On Windows (the environment has `OS=Windows_NT`, or the home folder starts with a drive letter) the mirror is appended by a PowerShell script passed as `-EncodedCommand` (a byte copy of stdin, so no shell quoting is involved), and listing, searching and reading go through `$.fs`. Two Windows limits: a single mirror file over the engine's 4 MiB read limit is not searched or read whole, and `recall` says so; and the 0700/0600 permission bits do not apply, the mirror sits under the user's own profile folder.
 - The memory block's heading used to carry a fixed city name in brackets; blocks written that way are still accepted.
 
 Built by [Nekyia Labs](https://nekyialabs.com).

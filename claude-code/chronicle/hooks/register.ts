@@ -58,6 +58,7 @@ const FLUSH_AT_CHARS = 256 * 1024
 const BUFFER_CAP_CHARS = 5 * 1024 * 1024
 const WARN_AFTER_FAILURES = 3
 const RUN_TIMEOUT_MS = 10_000
+const GREP_OUT_CAP = 4 * 1024 * 1024 // Windows search: matched text is capped where rg's stdout was
 const TAIL_SHARE_OF_WINDOW = 0.3
 const SUMMARY_IN_LOG_CHARS = 20_000
 // Double-quoted on purpose: an apostrophe inside a single-quoted string once kept this plugin from loading at all.
@@ -163,6 +164,9 @@ export function normalizeConfig(raw: unknown, home?: string): Cfg {
 let zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } })()
 let labels = { user: 'You', agent: 'Assistant' }
 let rgBin = 'rg'
+// Windows host: the mirror is appended through PowerShell and the archive is listed, searched and read through $.fs
+// (no sh, rg or cat there). Set from the environment the first time the settings are read.
+let isWin = false
 let memoriesOn = false
 let recallNames: readonly string[] = [RECALL_TOOL]
 let zoneToStore: string | undefined // set when the archive has no .chronicle.json yet: flush writes it once
@@ -184,6 +188,9 @@ async function cfgOf($: EngineInterface): Promise<Cfg> {
   }
   let home: string | undefined
   try { home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) } catch {}
+  let os = ''
+  try { os = (await $.env.get('OS')) ?? '' } catch {}
+  isWin = os === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(home ?? '')
   const cfg = normalizeConfig(raw, home)
   if (cfg.ignored.length) { try { $.ui.log(`chronicle: unknown settings ignored: ${cfg.ignored.join(', ')}`, { to: 'debug' }) } catch {} }
   // The day folders are named in one zone for the life of an archive: the one it recorded, unless the settings name one.
@@ -278,8 +285,7 @@ async function flush($: EngineInterface, timeoutMs: number): Promise<void> {
     const dir = `${root}/${safe(entries[0]!.day)}`
     const file = `${dir}/${safe(entries[0]!.sid)}${entries[0]!.suffix ?? ''}.jsonl`
     try {
-      // umask 077: the mirror is private. New folders 0700, new files 0600, whatever the inherited umask.
-      const r = await $.process.run(['sh', '-c', 'umask 077; mkdir -p -m 700 "$1" && cat >> "$2"', 'sh', dir, file], { stdin: entries.map(x => x.line).join(''), timeoutMs })
+      const r = await appendLines($, dir, file, entries.map(x => x.line).join(''), timeoutMs)
       if (r.exitCode !== 0) { failed.push(...entries); reason = r.stderr.trim().slice(0, 200) || `exit ${r.exitCode}` }
     } catch (err) {
       // A timeout may have written part of the group; the retry can then duplicate rows (see the uuid TODO below).
@@ -298,8 +304,108 @@ async function writeZoneMarker($: EngineInterface, root: string): Promise<void> 
   zoneToStore = undefined
   try {
     const file = `${root}/${ARCHIVE_MARKER}`
-    await $.process.run(['sh', '-c', 'umask 077; mkdir -p -m 700 "$1" && { [ -e "$2" ] || cat > "$2"; }', 'sh', root, file], { stdin: JSON.stringify({ timezone: z, format: 1 }) + '\n', timeoutMs: RUN_TIMEOUT_MS })
+    const text = JSON.stringify({ timezone: z, format: 1 }) + '\n'
+    if (isWin) { if (!(await $.fs.exists(file))) await $.fs.write(file, text) }
+    else await $.process.run(['sh', '-c', 'umask 077; mkdir -p -m 700 "$1" && { [ -e "$2" ] || cat > "$2"; }', 'sh', root, file], { stdin: text, timeoutMs: RUN_TIMEOUT_MS })
   } catch {}
+}
+
+// ---------- host files ----------
+// Linux and macOS: sh, cat and ripgrep, as before. Windows: the mirror is appended through PowerShell (always present,
+// a byte copy of stdin, no shell quoting: the script travels base64-encoded), and the archive is listed, searched and
+// read through $.fs. Every helper answers the same shape on both, so the callers do not know which host they are on.
+
+// Appends `text` to `file`, creating `dir` first. POSIX: umask 077 so new folders are 0700 and new files 0600,
+// whatever the inherited umask. Windows: the user's profile folder is private to the account already.
+async function appendLines($: EngineInterface, dir: string, file: string, text: string, timeoutMs: number): Promise<{ exitCode: number; stderr: string }> {
+  if (!isWin) return $.process.run(['sh', '-c', 'umask 077; mkdir -p -m 700 "$1" && cat >> "$2"', 'sh', dir, file], { stdin: text, timeoutMs })
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `[void][System.IO.Directory]::CreateDirectory('${psQuote(dir)}')`,
+    '$s = [System.Console]::OpenStandardInput()',
+    `$f = [System.IO.File]::Open('${psQuote(file)}', [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)`,
+    'try { $s.CopyTo($f) } finally { $f.Dispose() }',
+  ].join('\n')
+  return $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64utf16le(script)], { stdin: text, timeoutMs })
+}
+
+function psQuote(s: string): string { return s.replace(/'/g, "''") }
+
+// PowerShell's -EncodedCommand takes the script as base64 of its UTF-16LE bytes. Written out here: the module runs
+// with neither Node nor a DOM, so no Buffer and no btoa.
+export function b64utf16le(s: string): string {
+  const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); bytes.push(c & 0xff, c >> 8) }
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i]!, b = bytes[i + 1], c = bytes[i + 2]
+    const n = (a << 16) | ((b ?? 0) << 8) | (c ?? 0)
+    out += T[(n >> 18) & 63]! + T[(n >> 12) & 63]! + (b === undefined ? '=' : T[(n >> 6) & 63]!) + (c === undefined ? '=' : T[n & 63]!)
+  }
+  return out
+}
+
+// Reads whole files, one after another, in the shape `cat` answers: POSIX runs cat; Windows reads each through $.fs
+// (a file over its 4 MiB read limit counts as truncated, any other failure as a non-zero exit).
+async function readWhole($: EngineInterface, paths: string[]): Promise<{ stdout: string; exitCode: number; isStdoutTruncated: boolean }> {
+  if (!isWin) return $.process.run(['cat', '--', ...paths], { timeoutMs: RECALL_RUN_MS })
+  let stdout = ''
+  let exitCode = 0
+  let isStdoutTruncated = false
+  for (const p of paths) {
+    try {
+      const t = String(await $.fs.read(p))
+      stdout += t.endsWith('\n') || !t ? t : `${t}\n`
+    } catch (err) {
+      if (/MiB|too large|exceeds/i.test(why(err))) isStdoutTruncated = true; else exitCode = 1
+    }
+  }
+  return { stdout, exitCode, isStdoutTruncated }
+}
+
+// Windows: <root>/<day>/*.jsonl through $.fs.list, two levels, the shape archiveFiles answers.
+async function archiveFilesWin($: EngineInterface, root: string): Promise<{ files: { day: string; name: string; path: string }[]; missing?: boolean; error?: string }> {
+  let days
+  try { days = await $.fs.list(root) } catch (err) {
+    const w = why(err)
+    return /ENOENT|no such file|not found|does not exist/i.test(w) ? { files: [], missing: true } : { files: [], error: w.slice(0, 200) }
+  }
+  const files: { day: string; name: string; path: string }[] = []
+  for (const d of days) {
+    if (d.kind !== 'dir') continue
+    let ents
+    try { ents = await $.fs.list(`${root}/${d.name}`) } catch { continue }
+    for (const f of ents) if (f.kind === 'file' && f.name.endsWith('.jsonl')) files.push({ day: d.name, name: f.name, path: `${root}/${d.name}/${f.name}` })
+  }
+  return { files }
+}
+
+// Windows: the lines of the given files that hold any pattern (fixed strings, case-insensitive), read through $.fs.
+// Capped at 4 MiB of matched text, as rg's stdout was.
+async function grepLinesWin($: EngineInterface, patterns: string[], paths: string[]): Promise<{ lines: string[]; cut: boolean; error?: string }> {
+  const needles = patterns.map(p => p.toLowerCase()).filter(Boolean)
+  const lines: string[] = []
+  let used = 0
+  let cut = false
+  let error: string | undefined
+  for (const p of paths) {
+    let text: string
+    try { text = String(await $.fs.read(p)) } catch (err) {
+      const w = why(err)
+      if (!/ENOENT|no such file|not found|does not exist/i.test(w)) error ??= w.slice(0, 200)
+      continue
+    }
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      if (needles.length) { const low = line.toLowerCase(); if (!needles.some(n => low.includes(n))) continue }
+      if (used + line.length > GREP_OUT_CAP) { cut = true; break }
+      lines.push(line)
+      used += line.length + 1
+    }
+    if (cut) break
+  }
+  return { lines, cut, error }
 }
 
 // Queues a flush behind any in flight, so batches never interleave or reorder.
@@ -953,6 +1059,7 @@ async function rgRun($: EngineInterface, args: string[], timeoutMs: number) {
 
 // Lists <root>/<day>/*.jsonl as { day, name, path }. Missing archive: an empty list and `missing`.
 async function archiveFiles($: EngineInterface, root: string): Promise<{ files: { day: string; name: string; path: string }[]; missing?: boolean; error?: string }> {
+  if (isWin) return archiveFilesWin($, root)
   let r
   try { r = await rgRun($, ['--files', '--no-config', '--no-ignore', '--hidden', '--max-depth', '2', '-g', '*.jsonl', root], RECALL_RUN_MS) } catch (err) {
     if (err instanceof RgMissing) return { files: [], error: err.message }
@@ -975,7 +1082,8 @@ async function archiveFiles($: EngineInterface, root: string): Promise<{ files: 
 
 // Lines of the given files that hold any pattern (fixed strings, case-insensitive); every line when no pattern.
 async function grepLines($: EngineInterface, patterns: string[], paths: string[]): Promise<{ lines: string[]; cut: boolean; error?: string }> {
-  const argv = ['--no-config', '--no-ignore', '--hidden', '--fixed-strings', '--ignore-case', '--no-filename', '--no-line-number', '--no-heading', '--color', 'never']
+  if (isWin) return grepLinesWin($, patterns, paths)
+  const argv =['--no-config', '--no-ignore', '--hidden', '--fixed-strings', '--ignore-case', '--no-filename', '--no-line-number', '--no-heading', '--color', 'never']
   if (patterns.length) for (const p of patterns) argv.push('-e', p)
   else argv.push('-e', '')
   argv.push('--', ...paths)
@@ -1124,7 +1232,7 @@ async function recallAround($: EngineInterface, files: { day: string; name: stri
   if (!target) return `recall: no row with uuid ${uuid} in the mirror${found.error ? ` (search error: ${found.error})` : ''}.`
   const own = sessionFiles.filter(f => f.name === `${safe(target.sid || 'unknown')}.jsonl`).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))
   if (!own.length) return `recall: found ${uuid} but not its session file.`
-  const r = await $.process.run(['cat', '--', ...own.map(f => f.path)], { timeoutMs: RECALL_RUN_MS })
+  const r = await readWhole($, own.map(f => f.path))
   const readNote = r.isStdoutTruncated ? '[the session file was larger than one read allows: rows past that point are not shown here; narrow with from/to]' : r.exitCode !== 0 ? `[the session file was not read whole (exit ${r.exitCode})]` : ''
   const seq: Item[] = []
   const seen = new Set<string>()
@@ -2157,7 +2265,7 @@ async function memoryEvidence($: EngineInterface, root: string, sessionId: strin
   const pendingLines = (memories: boolean) => pending.filter(x => (memories ? x.suffix === '.memories' : !x.suffix)).map(x => x.line)
   const memLines: string[] = []
   if (memFiles.length) {
-    const r = await $.process.run(['cat', '--', ...memFiles.map(f => f.path)], { timeoutMs: RECALL_RUN_MS })
+    const r = await readWhole($, memFiles.map(f => f.path))
     if (r.exitCode !== 0 || r.isStdoutTruncated) return `memories not read (exit ${r.exitCode})`
     memLines.push(...r.stdout.split('\n'))
   }
@@ -2287,7 +2395,7 @@ async function markFreshAtStart($: EngineInterface): Promise<void> {
 
 let rgChecked = false
 async function checkRg($: EngineInterface): Promise<void> {
-  if (rgChecked) return
+  if (rgChecked || isWin) return // Windows searches the mirror through $.fs: no ripgrep to look for
   rgChecked = true
   try { await rgRun($, ['--version'], 5000) } catch (err) {
     try { $.ui.log(`chronicle: ${err instanceof RgMissing ? err.message : `could not run ripgrep (${why(err)})`}`) } catch {}

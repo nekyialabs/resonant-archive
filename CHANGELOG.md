@@ -5,6 +5,12 @@ All notable changes to `resonant-archive` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The chronicle mod runs on Windows.** The five places that shelled out to `sh`, `cat` and ripgrep now have a Windows path: the mirror is appended through `powershell.exe -EncodedCommand` (a byte copy of stdin, no shell quoting), the zone marker is written with `$.fs`, and the archive is listed, searched and read through `$.fs` (fixed strings, case-insensitive, the same semantics as the ripgrep call; capped at 4 MiB like rg's stdout was). Linux and macOS are unchanged. The ripgrep probe is skipped on Windows. The test harness treats a POSIX path and its Windows spelling as one file, takes an `env` option, and `tests/windows.test.ts` covers the append, the zone marker and recall on a Windows host.
+
 ## [2.0.1] - 2026-10-17
 
 ### Fixed
