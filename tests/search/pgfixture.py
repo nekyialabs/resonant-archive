@@ -1,6 +1,7 @@
 """A throwaway real Postgres + pgvector for the integration tests, and a synthetic corpus. Synthetic data only.
 
-Uses RESONANT_TEST_DSN if set (a scratch database you do not mind us creating tables in). Otherwise starts a private
+Uses RESONANT_ARCHIVE_TEST_DSN if set (an admin DSN on a server with pgvector, the same one tests/conftest.py uses; the
+older RESONANT_TEST_DSN still works). Otherwise starts a private
 cluster with the local `initdb` / `pg_ctl` (found next to `pg_config`, in /usr/lib/postgresql/*/bin, or on PATH) on a
 unix socket in a temp dir, and stops it afterwards. Returns None when neither is available (tests then skip).
 """
@@ -53,7 +54,7 @@ class TempPostgres:
         self.owned = False
 
     def start(self):
-        env = os.environ.get('RESONANT_TEST_DSN')
+        env = os.environ.get('RESONANT_ARCHIVE_TEST_DSN') or os.environ.get('RESONANT_TEST_DSN')
         if env:
             self.dsn = env
             return self

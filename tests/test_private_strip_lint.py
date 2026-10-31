@@ -23,6 +23,8 @@ CONFIG = f'words = ["{NAME}", "{PORT}"]\nsubstrings = ["{HOST}"]\nexclude = ["sk
 @pytest.fixture(autouse=True)
 def _no_ambient_terms(monkeypatch):
     monkeypatch.delenv(lint.ENV_TERMS, raising=False)
+    # Under CI=true the lint prints only file:line; the tests read the local format unless they set CI themselves.
+    monkeypatch.delenv("CI", raising=False)
 
 
 def _run(tmp_path, files, allow="", config=CONFIG, extra=()):

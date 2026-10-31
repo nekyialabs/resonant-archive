@@ -16,7 +16,10 @@ export type RigOptions = {
 
 // A test host on Windows hands the plugin's paths back with backslashes and a drive letter in front of a POSIX
 // spelling (`/home/tester/x` arrives as `C:\home\tester\x`). Both spellings are the same file here: one key.
-export const norm = (p: unknown): string => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+// A Windows path is not absolute on a POSIX host, so the engine may hand it over joined onto the cwd
+// (/runner/work/…/C:/Users/x/…): drop everything before the drive letter, then the drive itself.
+export const norm = (p: unknown): string =>
+  String(p).replace(/\\/g, '/').replace(/^.*?\/(?=[A-Za-z]:\/)/, '').replace(/^[A-Za-z]:(?=\/)/, '')
 
 export function rig(on: any, o: RigOptions = {}) {
   const files = new Map<string, string>(Object.entries(o.files ?? {}).map(([k, v]) => [norm(k), v]))
