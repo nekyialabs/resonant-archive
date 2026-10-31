@@ -1,12 +1,15 @@
 """Integration tests against a real Postgres + pgvector (see pgfixture). Synthetic corpus only. Skipped, loudly, when no
-Postgres with pgvector can be started and RESONANT_TEST_DSN is not set."""
+Postgres with pgvector can be started and RESONANT_ARCHIVE_TEST_DSN is not set."""
 import json
+import os
 import unittest
 
 try:
     import psycopg
 except ImportError:   # pragma: no cover
     psycopg = None
+else:
+    from psycopg.conninfo import make_conninfo
 
 from resonant_archive.search import (FakeEmbedder, SearchConfig, SearchError, Searcher, envelope, open_readonly,
                                      render, run_recall)
@@ -18,7 +21,12 @@ DSNS = {}
 
 
 def _dsn(base, dbname):
-    return f'{base} dbname={dbname}'
+    return make_conninfo(base, dbname=dbname)
+
+
+# On a shared server (RESONANT_ARCHIVE_TEST_DSN) the databases are named per process and dropped afterwards.
+def _dbname(name):
+    return f'ra_search_{name}_{os.getpid()}'
 
 
 def setUpModule():
@@ -30,17 +38,22 @@ def setUpModule():
     except Exception as e:   # pragma: no cover
         raise unittest.SkipTest(f'could not start Postgres: {e}')
     if PG is None:
-        raise unittest.SkipTest('no Postgres binaries found and RESONANT_TEST_DSN not set')
+        raise unittest.SkipTest('no Postgres binaries found and RESONANT_ARCHIVE_TEST_DSN not set')
     with psycopg.connect(PG.dsn, autocommit=True) as admin:
         for name, mem in (('plain', False), ('withmem', True)):
-            admin.execute(f'create database {name}')
-            DSNS[name] = _dsn(PG.dsn, name)
+            admin.execute(f'drop database if exists {_dbname(name)} with (force)')
+            admin.execute(f'create database {_dbname(name)}')
+            DSNS[name] = _dsn(PG.dsn, _dbname(name))
     for name, mem in (('plain', False), ('withmem', True)):
         with psycopg.connect(DSNS[name], autocommit=True) as c:
             fx.load(c, extract_anchors, with_memories=mem)
 
 
 def tearDownModule():
+    if PG and not PG.owned:
+        with psycopg.connect(PG.dsn, autocommit=True) as admin:
+            for name in DSNS:
+                admin.execute(f'drop database if exists {_dbname(name)} with (force)')
     if PG:
         PG.stop()
 
