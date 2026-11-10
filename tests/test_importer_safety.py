@@ -98,6 +98,12 @@ HOSTILE = {   # shapes that made an earlier version of a rule quadratic; each mu
     "quotes": ("'" * 200_000 + "env"), "service account": "/" + "service-account-" * 15_000 + "!",
     "tfstate": "terraform.tfstate" * 15_000 + "!", "begin": "BEGIN " * 50_000, "env dots": ".env" * 60_000 + "!",
     "sudo flags": "sudo " + "-a " * 80_000, "assignments": "a=b " * 60_000 + "env", "proc": "/proc/x" * 40_000,
+    # Windows rules (2.0.2)
+    "get-process": "get-process x " * 40_000, "gps": "gps " * 120_000, "reg query": "reg query " * 50_000,
+    "cmd flags": "cmd " + "/a " * 80_000, "powershell flags": "powershell " + "-a " * 80_000,
+    "gci": "gci " * 120_000, "percent": "%A_KEY" * 70_000, "env colon": "$env:" * 90_000, "wmic": "wmic process " * 30_000,
+    "encoded": "powershell -enc " + "A" * 400_000, "many encoded": "powershell -enc " + "AAAAAAAAAAAAAAAAAAAA " * 20_000,
+    "netsh": "netsh wlan show profile " * 20_000, "hklm": "HKLM:\\" * 70_000, "cmd.exe": "cmd.exe " * 60_000,
 }
 
 

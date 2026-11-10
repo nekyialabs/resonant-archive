@@ -16,6 +16,8 @@ both together, and keep the case lists in both test suites the same.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 
 WITHHELD = "[withheld: secret-bearing source]"
@@ -27,8 +29,15 @@ SECRET_FILE_SOURCE = "|".join((
     r"[/.](?:env(?:\.[\w-]{1,40}){0,4}|dev\.vars|mcp\.json|pem|key|netrc|pgpass|environ|p12|pfx|jks|keystore|ppk|kdbx|htpasswd)$",
     r"(?:^|[/\\])\.env[\w.~*?-]*$",                                    # .env  .env.local  .envrc  .env*  .env.bak
     r"(?:^|[/\\])\.(?:npmrc|pypirc|git-credentials|vault-token|bash_history|zsh_history)$",
-    r"\.docker/config\.json$",
-    r"\.kube/config$",
+    r"\.docker[/\\]config\.json$",
+    r"\.kube[/\\]config$",
+    r"ConsoleHost_history\.txt$",                                      # PowerShell's .bash_history (PSReadLine)
+    r"[/\\]Microsoft[/\\](?:Credentials|Protect|Vault)[/\\]",          # Windows DPAPI blobs and the credential vault
+    r"[/\\]config[/\\](?:SAM|SECURITY|SYSTEM)$",
+    r"(?:^|[/\\])NTUSER\.DAT$",
+    r"\.azure[/\\](?:accessTokens\.json|msal_token_cache\.\w+|azureProfile\.json)$",
+    r"[/\\]gh[/\\]hosts\.yml$",
+    r"[/\\]gcloud[/\\](?:credentials|access_tokens)\.db$",
     r"(?:^|[/.\\])(?:credentials(?:\.json)?|id_[a-z0-9]+)$",           # id_rsa id_ed25519 id_ecdsa id_dsa ...
     r"(?:^|[/\\])secrets?\.[\w.*-]+$",                                 # secrets.yml  secret.json
     r"terraform\.tfstate[\w.-]{0,40}$",
@@ -37,7 +46,7 @@ SECRET_FILE_SOURCE = "|".join((
     r"/etc/g?shadow$",
     r"(?:^|[/\\])[\w.-]{0,100}(?:service[-_]?account|application_default_credentials)[\w.-]{0,100}\.json$",
     r"(?:^|[/\\])client_secrets?\.json$",
-    r"/private/",
+    r"[/\\]private[/\\]",
 ))
 SECRET_FILE = re.compile(SECRET_FILE_SOURCE, re.I)
 
@@ -47,7 +56,8 @@ SECRET_HINT_SOURCE = (r"pass(?:word|wd|phrase|code)|secret|token|api[_ -]?key|cr
 SECRET_HINT = re.compile(SECRET_HINT_SOURCE, re.I)
 
 _SEARCH_TOOLS = ("grep", "glob")
-_SEARCH_COMMAND = re.compile(r"^(?:\S*/)?(?:grep|egrep|fgrep|zgrep|rg|ag|ack|find|locate|fd)(?:\s|$)")
+_SEARCH_COMMAND = re.compile(r"^(?:\S*[/\\])?(?:grep|egrep|fgrep|zgrep|rg|ag|ack|find|locate|fd|findstr|select-string|sls)(?:\.exe)?(?:\s|$)",
+                             re.I)
 
 # A command segment (after wrappers are peeled off) that prints an environment, argv or a credential.
 # `set -e` prints nothing (only a bare `set` lists variables), so flags pass there.
@@ -86,6 +96,63 @@ _PEELERS = tuple(re.compile(p) for p in (
     r"^(?:nice|ionice|stdbuf|timeout)\s+(?:-\S+\s+(?:\d+\s+)?)*(?:\d+[smhd]?\s+)?",
 ))
 _SHELL_C = re.compile(r"^(?:\S*/)?(?:ba|z|da|k|fi|a|c)?sh\s+(?:-\S+\s+)*?-[A-Za-z]*c\s+(.+)$")
+# cmd /c "..."   powershell -NoProfile -Command "..."   pwsh -c "..."
+_WIN_SHELL_C = re.compile(r"^(?:\S*[/\\])?(?:cmd|powershell|pwsh)(?:\.exe)?\s+(?:[-/]\S+\s+)*?[-/](?:c|k|command)\s+(.+)$", re.I)
+# What cmd prints with `set NAME`: every variable whose name starts with NAME.
+_WIN_PROGRAM = re.compile(r"^set\s+[A-Za-z_]\w*\s*$", re.I)
+
+# Windows and PowerShell commands that print the environment, command lines or credentials, found anywhere in the command
+# line (a pipeline such as `Get-Process | Select CommandLine` has the program and its argument in different segments).
+# Each rule has a cheap needle that must be in the lower-cased command before the regex is tried.
+_WIN_READS: tuple[tuple[str, re.Pattern[str]], ...] = tuple((needle, re.compile(src, re.I)) for needle, src in (
+    # gci env:   dir env:   Get-Content env:NAME   Get-Item -Path Env:*
+    ("env:", r"(?<![\w-])(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|type|cat|more)\s+(?:-(?:path|literalpath)\s+)?[\"']?env:"),
+    ("environment]", r"\[(?:system\.)?environment\]::getenvironmentvariables?\b"),
+    # reading a variable whose name says it is secret: $env:GITHUB_TOKEN, %API_KEY%
+    ("env:", r"\$\{?env:[A-Za-z0-9_]{0,40}(?:key|token|secret|passw|pwd|pass|credential)"),
+    ("%", r"%[A-Za-z0-9_]{0,40}(?:key|token|secret|passw|pwd|credential)[A-Za-z0-9_]{0,40}%"),
+    # command lines of running processes and services (they carry passwords and tokens as arguments)
+    ("win32_", r"\bwin32_(?:process|service|environment)\b"),
+    ("wmic", r"\bwmic(?:\.exe)?\s+(?:process|service|environment)\b"),
+    ("commandline", r"\b(?:get-process|gps)\b[^\n]{0,300}?\bcommandline\b"),
+    # stored credentials
+    ("cmdkey", r"\bcmdkey(?:\.exe)?\s+/l(?:ist)?\b"),
+    ("vaultcmd", r"\bvaultcmd(?:\.exe)?\s+/list"),
+    ("credential", r"\bget-(?:stored)?credential\b|\.getnetworkcredential\("),
+    ("get-secret", r"\bget-secret(?:info)?\b"),
+    ("passwordvault", r"\bpasswordvault\b"),
+    ("convertfrom-securestring", r"\bconvertfrom-securestring\b"),
+    ("ptrtostring", r"\bptrtostring(?:auto|bstr|uni)\b"),
+    ("netsh", r"\bnetsh\s+wlan\s+show\s+profiles?\b[^\n]{0,200}?key\s*=\s*clear"),
+    # the registry: user and machine environment, Winlogon, SAM, or anything named like a secret
+    ("reg", r"\breg(?:\.exe)?\s+(?:query|export|save)\b[^\n]{0,200}?(?:[\\/]environment\b|winlogon|[\\/](?:sam|security)\b|passw|secret|token|"
+            r"credential|api[_ -]?key|private)"),
+    ("hk", r"\bhk(?:cu|lm|ey_current_user|ey_local_machine):?[\\/](?:[^\s\"']{0,200}?[\\/])?environment\b"),
+))
+# A PowerShell script passed as -EncodedCommand (base64 of UTF-16LE): decoded and looked at again.
+_PS_ENCODED = re.compile(r"(?<![\w-])-e(?:c|nc|ncodedcommand)?\s+([A-Za-z0-9+/]{16,}={0,2})(?![\w+/=])", re.I)
+
+
+def _windows_secret_read(cmd: str) -> bool:
+    low = cmd.lower()
+    return any(needle in low and rx.search(cmd) for needle, rx in _WIN_READS)
+
+
+def _decoded_powershell(cmd: str) -> list[str]:
+    """The scripts hidden in ``powershell -EncodedCommand <base64>`` (at most 8, each up to 200 KB)."""
+    low = cmd.lower()
+    if "powershell" not in low and "pwsh" not in low:
+        return []
+    out: list[str] = []
+    for m in _PS_ENCODED.finditer(cmd):
+        try:
+            raw = base64.b64decode(m.group(1)[:270_000], validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        out.append(raw[:200_000].decode("utf-16-le", errors="replace"))
+        if len(out) == 8:
+            break
+    return out
 
 _SEGMENTS = re.compile(r"[;&|\n]+|\$\(|`")
 _TOKENS = re.compile(r"[\s'\"`;&|()<>=]+")
@@ -93,7 +160,7 @@ _ENV_BIN = re.compile(r"/bin/env$")
 _ENV_READ = re.compile(r"\b(?:os\.environ|os\.getenv|process\.env|ENV\[)")
 _PATH_KEYS = ("file_path", "path", "notebook_path")
 _SEARCH_KEYS = ("pattern", "path", "glob", "include", "query")
-_ASSIGN_VALUE = re.compile(r"^[A-Za-z_]\w*=")
+_ASSIGN_VALUE = re.compile(r"^(?:\$\{?env:)?[A-Za-z_]\w*\}?=")   # NAME=value, $env:NAME=value: never part of the summary
 
 
 def _trim(seg: str) -> str:
@@ -114,20 +181,20 @@ def _segment_secret(seg: str, depth: int = 0) -> bool:
     seg = _trim(seg)
     if not seg or depth > 5:
         return False
-    if SECRET_PROGRAM.search(seg):
+    if SECRET_PROGRAM.search(seg) or _WIN_PROGRAM.search(seg):
         return True
     for rx in _PEELERS:
         m = rx.match(seg)
         if m and _segment_secret(seg[m.end():], depth + 1):
             return True
-    m = _SHELL_C.match(seg)
+    m = _SHELL_C.match(seg) or _WIN_SHELL_C.match(seg)
     if m:
         inner = _trim_quotes(m.group(1))
         return any(_segment_secret(s, depth + 1) for s in _SEGMENTS.split(inner))
     return False
 
 
-def secret_bearing(name: object, tool_input: object) -> bool:
+def secret_bearing(name: object, tool_input: object, _depth: int = 0) -> bool:
     """True when a tool call (its ``name`` and ``input``) reads a secret-bearing file, prints the environment or a
     credential, or searches for a secret by name. Best effort (see the module docstring)."""
     o = tool_input if isinstance(tool_input, dict) else {}
@@ -142,7 +209,9 @@ def secret_bearing(name: object, tool_input: object) -> bool:
                 return True
     cmd = o.get("command") if isinstance(o.get("command"), str) else ""
     if cmd:
-        if _ENV_READ.search(cmd):
+        if _ENV_READ.search(cmd) or _windows_secret_read(cmd):
+            return True
+        if _depth < 2 and any(secret_bearing(name, {"command": dec}, _depth + 1) for dec in _decoded_powershell(cmd)):
             return True
         for seg in _SEGMENTS.split(cmd):
             if _segment_secret(seg):
