@@ -428,11 +428,25 @@ def cmd_migrate_v01(
     typer.echo("5. When you are happy, delete the old folder yourself. This tool never deletes it.")
 
 
+def _utf8_streams() -> None:
+    """On Windows stdout and stderr use the ANSI code page (cp1252) when they are a pipe or a file, so printing a path
+    or a search hit with Japanese or an emoji in it raised UnicodeEncodeError and the command died. Write UTF-8, and
+    never fail on a character: a hit is shown, not dropped. Other platforms already default to UTF-8."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
     """Console-script entry point.
 
     ``recall`` (and its ``search`` shorthand) is handled before typer so its arguments reach the search parser
     untouched: queries that start with a dash, ``--`` terminators and ``--json`` all behave as documented."""
+    _utf8_streams()
     argv = sys.argv[1:]
     if argv[:1] == ["recall"]:
         sys.exit(run_recall_cli(argv[1:]))
