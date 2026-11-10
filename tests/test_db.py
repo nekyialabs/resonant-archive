@@ -89,14 +89,21 @@ def test_connect_failure_hides_password():
     assert "hunter2secret" not in str(err.value)
 
 
-def test_connect_timeout_default_applies_unless_the_dsn_or_environment_sets_one(monkeypatch):
+def test_connect_timeout_default_is_windows_only_and_never_overrides_the_person(monkeypatch):
     monkeypatch.delenv("PGCONNECT_TIMEOUT", raising=False)
+    monkeypatch.setattr(config.os, "name", "nt")
     assert config.connect_kwargs("postgresql://u@h/d") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
     assert config.connect_kwargs(None) == {"connect_timeout": config.CONNECT_TIMEOUT_S}
     assert config.connect_kwargs("postgresql://u@h/d?connect_timeout=3") == {}
     assert config.connect_kwargs("host=h dbname=d connect_timeout=3") == {}
+    # a password that merely contains the words must not switch the default off
+    assert config.connect_kwargs("postgresql://u:connect_timeout@h/d") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs("host=h password='connect_timeout=1'") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
     monkeypatch.setenv("PGCONNECT_TIMEOUT", "4")
     assert config.connect_kwargs("postgresql://u@h/d") == {}
+    monkeypatch.delenv("PGCONNECT_TIMEOUT")
+    monkeypatch.setattr(config.os, "name", "posix")
+    assert config.connect_kwargs("postgresql://u@h/d") == {}      # Linux and macOS behave exactly as before
 
 
 def _without_reader(checks):

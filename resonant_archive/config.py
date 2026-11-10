@@ -164,17 +164,25 @@ def _toml_value(v: Any) -> str:
     return _toml_str(str(v))
 
 
-#: Seconds to wait for a connection when neither the DSN nor PGCONNECT_TIMEOUT says. libpq's own default is to wait
-#: forever; on Windows a refused connection (nothing listening yet, Docker still starting) was measured at 130 s
-#: before the error came back, so a down database hung the CLI and the MCP server for two minutes.
+#: Seconds to wait for a connection on Windows when neither the DSN nor PGCONNECT_TIMEOUT says. On Windows a refused
+#: connection (nothing listening yet, Docker still starting) was measured at 130 s before libpq reported it, so a down
+#: database hung the CLI and the MCP server for two minutes. Elsewhere libpq's own behaviour is left exactly as it was.
 CONNECT_TIMEOUT_S = 10
 
 
 def connect_kwargs(dsn: str | None) -> dict[str, int]:
-    """``{"connect_timeout": 10}`` for ``psycopg.connect``, or ``{}`` when the DSN or PGCONNECT_TIMEOUT already
-    sets one (the person's own value wins)."""
-    if os.environ.get("PGCONNECT_TIMEOUT") or "connect_timeout" in (dsn or "").lower():
+    """``{"connect_timeout": 10}`` for ``psycopg.connect`` on Windows, ``{}`` everywhere else. Also ``{}`` when the DSN
+    (parsed, not searched: a password that contains the word cannot switch it off) or PGCONNECT_TIMEOUT already sets
+    one, so the person's own value wins."""
+    if os.name != "nt" or os.environ.get("PGCONNECT_TIMEOUT"):
         return {}
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        if "connect_timeout" in conninfo_to_dict(dsn or ""):
+            return {}
+    except Exception:  # a DSN psycopg cannot parse: connect() will say so; the default timeout still applies
+        pass
     return {"connect_timeout": CONNECT_TIMEOUT_S}
 
 
