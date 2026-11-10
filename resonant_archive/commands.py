@@ -83,7 +83,7 @@ def write_env_file(project_dir: Path, port: int = config.DEFAULT_PORT, *, overwr
     if env.exists() and not overwrite:
         values = _read_env(env)
         if not weak_password(values.get(ENV_PASSWORD)):
-            fsutil.make_private(env)
+            fsutil.ensure_private(env)
             return env, values[ENV_PASSWORD]
         other = {k: v for k, v in values.items() if k != ENV_PASSWORD}
     other.setdefault(ENV_PORT, str(port))
@@ -105,7 +105,7 @@ def prepare_project_dir(project_dir: Path) -> Path:
     project_dir = Path(project_dir).expanduser()
     if not project_dir.exists():
         project_dir.mkdir(parents=True, mode=0o700)
-        fsutil.make_private(project_dir, directory=True)
+        fsutil.ensure_private(project_dir, directory=True)
     return project_dir.resolve()
 
 

@@ -67,3 +67,69 @@ def test_no_window_flag_is_zero_off_windows():
     assert (fsutil.NO_WINDOW != 0) == (sys.platform == "win32")
     out = subprocess.run([sys.executable, "-c", "print(1)"], capture_output=True, text=True, creationflags=fsutil.NO_WINDOW)
     assert out.stdout.strip() == "1"
+
+
+# ---- a failed restriction must be loud, never silent ----
+
+@pytest.fixture
+def restriction_fails(monkeypatch):
+    """icacls (Windows) or chmod (elsewhere) fails."""
+    if sys.platform == "win32":
+        real = subprocess.run
+
+        def run(args, *a, **kw):
+            if args and args[0] == "icacls":
+                return subprocess.CompletedProcess(args, 5, "", "Access is denied.")
+            return real(args, *a, **kw)
+
+        monkeypatch.setattr(fsutil.subprocess, "run", run)
+    else:
+        def chmod(*a, **kw):
+            raise PermissionError("no")
+
+        monkeypatch.setattr(fsutil.os, "chmod", chmod)
+    fsutil.take_unprotected()
+    yield
+    fsutil.take_unprotected()
+
+
+def test_make_private_says_false_when_the_restriction_fails(tmp_path, restriction_fails):
+    f = tmp_path / "x"
+    f.write_text("x")
+    assert fsutil.make_private(f) is False
+
+
+def test_write_private_text_warns_on_stderr_and_reports_the_file(tmp_path, restriction_fails, capsys):
+    p = tmp_path / "secret.env"
+    assert fsutil.write_private_text(p, "A=1\n") is False
+    assert p.read_text() == "A=1\n"                                     # the file is written, but nobody is told it is safe
+    err = capsys.readouterr().err
+    assert str(p) in err and "readable by other users" in err
+    assert fsutil.take_unprotected() == [str(p)]
+
+
+def test_init_docker_says_in_its_result_that_the_env_file_is_not_private(tmp_path, restriction_fails):
+    import shutil as sh
+    from pathlib import Path
+
+    from typer.testing import CliRunner
+
+    from resonant_archive import cli
+
+    sh.copy(Path(__file__).resolve().parent.parent / "docker-compose.yml", tmp_path / "docker-compose.yml")
+    res = CliRunner().invoke(cli.app, ["init", "--docker", "--project-dir", str(tmp_path)])
+    assert res.exit_code == 0, res.output
+    assert ".env" in res.output and "could NOT be restricted" in res.output
+    assert "readable by other users" in res.output                     # the stderr warning (CliRunner mixes the streams)
+
+
+def test_a_failed_or_empty_whoami_is_a_failed_restriction(tmp_path, monkeypatch):
+    monkeypatch.setattr(fsutil, "WINDOWS", True)
+    monkeypatch.setattr(fsutil, "_sid", None)
+    f = tmp_path / "x"
+    f.write_text("x")
+    for out in (subprocess.CompletedProcess([], 1, "", "boom"), subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, '"h\\u","not-a-sid"\n', "")):
+        monkeypatch.setattr(fsutil.subprocess, "run", lambda *a, _o=out, **k: _o)
+        monkeypatch.setattr(fsutil, "_sid", None)
+        assert fsutil.make_private(f) is False

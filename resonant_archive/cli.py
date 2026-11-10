@@ -25,7 +25,7 @@ from typing import List, Optional
 
 import typer
 
-from . import __version__, commands, config, db, importers, runtime
+from . import __version__, commands, config, db, fsutil, importers, runtime
 
 app = typer.Typer(
     name="resonant-archive",
@@ -87,6 +87,21 @@ def cmd_init(
     save: bool = typer.Option(True, "--save/--no-save", help="Save --dsn, and the read-only address, to the config file (mode 0600)."),
 ) -> None:
     """Prepare the database: create the extensions and apply the migrations. Safe to run again."""
+    try:
+        _cmd_init(dsn, docker, up, project_dir, port, no_extensions, save)
+    finally:
+        _report_unprotected()
+
+
+def _report_unprotected() -> None:
+    """A file that holds a password and could not be restricted to this account (Windows without icacls, a FAT drive):
+    the warning already went to stderr when it happened; say it again in the command's own result."""
+    for path in fsutil.take_unprotected():
+        typer.echo(f"warning: {path} could NOT be restricted to your account and may be readable by other users of this "
+                   "machine (it holds a database password).")
+
+
+def _cmd_init(dsn, docker, up, project_dir, port, no_extensions, save) -> None:
     _warn_argv_dsn(dsn)
     if docker:
         _init_docker(project_dir or commands.default_project_dir(), port, up)
