@@ -7,6 +7,8 @@ import pytest
 
 from resonant_archive import config, db
 
+from .permcheck import is_private
+
 
 def test_init_creates_schema_and_is_idempotent(blank_dsn):
     first = db.init(blank_dsn)
@@ -79,10 +81,29 @@ def test_connect_readonly_refuses_writes(dsn):
                       "VALUES ('a', 's', 'c', now(), 'user', 'x', 0)")
 
 
+# Port 1 refuses at once on Linux, but libpq on Windows waited 130 s for it: these DSNs name their own short timeout
+# (a DSN's own connect_timeout wins over the default), and test_connect_timeout_default_* covers the default.
 def test_connect_failure_hides_password():
     with pytest.raises(db.DatabaseError) as err:
-        db.connect("postgresql://u:hunter2secret@127.0.0.1:1/none")
+        db.connect("postgresql://u:hunter2secret@127.0.0.1:1/none?connect_timeout=2")
     assert "hunter2secret" not in str(err.value)
+
+
+def test_connect_timeout_default_is_windows_only_and_never_overrides_the_person(monkeypatch):
+    monkeypatch.delenv("PGCONNECT_TIMEOUT", raising=False)
+    monkeypatch.setattr(config.os, "name", "nt")
+    assert config.connect_kwargs("postgresql://u@h/d") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs(None) == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs("postgresql://u@h/d?connect_timeout=3") == {}
+    assert config.connect_kwargs("host=h dbname=d connect_timeout=3") == {}
+    # a password that merely contains the words must not switch the default off
+    assert config.connect_kwargs("postgresql://u:connect_timeout@h/d") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs("host=h password='connect_timeout=1'") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", "4")
+    assert config.connect_kwargs("postgresql://u@h/d") == {}
+    monkeypatch.delenv("PGCONNECT_TIMEOUT")
+    monkeypatch.setattr(config.os, "name", "posix")
+    assert config.connect_kwargs("postgresql://u@h/d") == {}      # Linux and macOS behave exactly as before
 
 
 def _without_reader(checks):
@@ -111,7 +132,7 @@ def test_doctor_fix_repairs(blank_dsn):
 
 
 def test_doctor_reports_unreachable_database_without_raising():
-    checks = db.doctor("postgresql://u:pw@127.0.0.1:1/none")
+    checks = db.doctor("postgresql://u:pw@127.0.0.1:1/none?connect_timeout=2")
     assert checks[0].name == "connection" and not checks[0].ok
     assert "pw@" not in checks[0].detail
 
@@ -146,7 +167,7 @@ def test_config_resolution_order(tmp_path, monkeypatch):
     with pytest.raises(config.ConfigError):
         config.resolve_dsn()
     path = config.write_dsn("postgresql://a:b@h/d", readonly_dsn="postgresql://r:s@h/d")
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert is_private(path)
     assert config.resolve_dsn() == "postgresql://a:b@h/d"
     assert config.resolve_dsn(readonly=True) == "postgresql://r:s@h/d"
     monkeypatch.setenv(config.ENV_DSN, "postgresql://env@h/d")

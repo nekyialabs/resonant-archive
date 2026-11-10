@@ -25,7 +25,7 @@ from typing import List, Optional
 
 import typer
 
-from . import __version__, commands, config, db, importers, runtime
+from . import __version__, commands, config, db, fsutil, importers, runtime
 
 app = typer.Typer(
     name="resonant-archive",
@@ -87,6 +87,21 @@ def cmd_init(
     save: bool = typer.Option(True, "--save/--no-save", help="Save --dsn, and the read-only address, to the config file (mode 0600)."),
 ) -> None:
     """Prepare the database: create the extensions and apply the migrations. Safe to run again."""
+    try:
+        _cmd_init(dsn, docker, up, project_dir, port, no_extensions, save)
+    finally:
+        _report_unprotected()
+
+
+def _report_unprotected() -> None:
+    """A file that holds a password and could not be restricted to this account (Windows without icacls, a FAT drive):
+    the warning already went to stderr when it happened; say it again in the command's own result."""
+    for path in fsutil.take_unprotected():
+        typer.echo(f"warning: {path} could NOT be restricted to your account and may be readable by other users of this "
+                   "machine (it holds a database password).")
+
+
+def _cmd_init(dsn, docker, up, project_dir, port, no_extensions, save) -> None:
     _warn_argv_dsn(dsn)
     if docker:
         _init_docker(project_dir or commands.default_project_dir(), port, up)
@@ -194,6 +209,7 @@ def cmd_import(
 ) -> None:
     """Import a folder or file. Incremental: an unchanged input is skipped, so running it again is cheap."""
     _warn_argv_dsn(dsn)
+    path = path.expanduser()   # a shell expands ~ itself on Linux and macOS; PowerShell and cmd hand it over as typed
     if not path.exists():
         raise _fail(f"{path} does not exist")
     if date_order not in ("dmy", "mdy"):
@@ -258,7 +274,7 @@ def cmd_models_fetch(
             typer.echo(f"  {name}: {pct}%", err=True)
 
     try:
-        d = fetch_model(model_dir, force=force, progress=progress)
+        d = fetch_model(model_dir.expanduser() if model_dir else None, force=force, progress=progress)
     except ModelIntegrityError as exc:
         raise _fail(f"model check failed: {exc}") from None
     except OSError as exc:
@@ -277,7 +293,7 @@ def cmd_serve(
     from .embed import server
 
     try:
-        code = server.serve(host, port, model_dir=model_dir, threads=threads)
+        code = server.serve(host, port, model_dir=model_dir.expanduser() if model_dir else None, threads=threads)
     except (server.NonLoopbackHost, FileExistsError) as exc:
         raise _fail(str(exc), 2) from None
     except Exception as exc:  # ModelIntegrityError, FileNotFoundError (model not fetched), RuntimeError
@@ -428,11 +444,25 @@ def cmd_migrate_v01(
     typer.echo("5. When you are happy, delete the old folder yourself. This tool never deletes it.")
 
 
+def _utf8_streams() -> None:
+    """On Windows stdout and stderr use the ANSI code page (cp1252) when they are a pipe or a file, so printing a path
+    or a search hit with Japanese or an emoji in it raised UnicodeEncodeError and the command died. Write UTF-8, and
+    never fail on a character: a hit is shown, not dropped. Other platforms already default to UTF-8."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
     """Console-script entry point.
 
     ``recall`` (and its ``search`` shorthand) is handled before typer so its arguments reach the search parser
     untouched: queries that start with a dash, ``--`` terminators and ``--json`` all behave as documented."""
+    _utf8_streams()
     argv = sys.argv[1:]
     if argv[:1] == ["recall"]:
         sys.exit(run_recall_cli(argv[1:]))

@@ -12,13 +12,21 @@ set -u
 cd "$(dirname "$0")/.."
 fail=0
 
+# A Python that actually runs. On Windows `python3` is often the Microsoft Store stub (it prints "Python was not
+# found" and exits 49) and the standard installer only provides `python`, so each candidate is run before it is used.
+PY=
+for c in python3 python py; do
+  if "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+done
+if [ -z "$PY" ]; then echo "lint: no working python3 or python on PATH" >&2; exit 2; fi
+
 shared="../../scripts/private_strip_lint.py"
 if [ -f "$shared" ] && [ -f ../../scripts/private_strip_lint.toml ]; then
   # inside the repository: the same lint, the same rules, limited to this folder
-  python3 "$shared" --root ../.. --only claude-code/chronicle/ || fail=$?
+  "$PY" "$shared" --root ../.. --only claude-code/chronicle/ || fail=$?
 else
   # the mod on its own (no repository around it): the private terms file, plus the home-directory check
-  python3 - <<'PY' || fail=$?
+  "$PY" - <<'PY' || fail=$?
 import os, re, subprocess, sys
 terms = os.environ.get('PRIVATE_STRIP_TERMS_FILE')
 rules = [('home path', re.compile(r'(?:/home|/Users)/(?!(?:user|users|you|me|name|username|someone|tester|example|\$|<|\{|\*|%|~)(?![A-Za-z0-9_]))[A-Za-z_][A-Za-z0-9_.-]*/', re.I))]
@@ -52,7 +60,7 @@ try:
 except Exception:
     names = [os.path.join(d, f) for d, _, fs in os.walk('.') for f in fs]
 bad = 0
-for n in (os.path.normpath(x) for x in names if x):
+for n in (os.path.normpath(x).replace(os.sep, '/') for x in names if x):   # '/' on Windows too: the prefixes below
     if n.startswith(('.claude-plugin/types/', 'node_modules/', '.git/')) or n == 'scripts/lint.sh' or n.startswith('tests/'): continue
     if skip and os.path.realpath(n) == skip: continue
     try: text = open(n, encoding='utf-8', errors='replace').read()
@@ -64,7 +72,7 @@ sys.exit(bad)
 PY
 fi
 
-python3 - <<'PY' || { [ "$fail" -ne 0 ] || fail=1; }   # keep exit 2 (unusable terms file) over 1
+"$PY" - <<'PY' || { [ "$fail" -ne 0 ] || fail=1; }   # keep exit 2 (unusable terms file) over 1
 import json, re, sys
 ex = json.load(open('chronicle.example.json'))
 t = open('tests/config.test.ts').read()

@@ -31,8 +31,10 @@ def open_readonly(dsn: str, timeout: str = '10s'):
     except ImportError:
         raise SearchError('psycopg 3 is not installed (pip install "psycopg[binary]")', 'db')
     try:
+        from ..config import connect_kwargs
         return psycopg.connect(dsn, autocommit=True,
-                               options=f'-c default_transaction_read_only=on -c statement_timeout={timeout}')
+                               options=f'-c default_transaction_read_only=on -c statement_timeout={timeout}',
+                               **connect_kwargs(dsn))
     except Exception as e:
         first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
         raise SearchError(f'cannot reach the archive database ({first})', 'db')

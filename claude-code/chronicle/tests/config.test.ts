@@ -110,6 +110,17 @@ test('archiveRoot: ~ is expanded, a trailing slash dropped, and no HOME means no
   expect(normalizeConfig({ archiveRoot: '/abs/path' }, undefined).archiveRoot).toBe('/abs/path')
 })
 
+test('archiveRoot on Windows: ~\\ is expanded and a trailing backslash dropped', () => {
+  expect(normalizeConfig({ archiveRoot: '~\\mirror\\x\\' }, 'C:\\Users\\t\\', true).archiveRoot).toBe('C:\\Users\\t\\mirror\\x')
+  expect(normalizeConfig({ archiveRoot: 'D:\\chronicle\\' }, 'C:\\Users\\t', true).archiveRoot).toBe('D:\\chronicle')
+})
+
+test('archiveRoot off Windows: a backslash is an ordinary character, nothing changes', () => {
+  expect(normalizeConfig({ archiveRoot: '~\\mirror\\' }, '/home/tester').archiveRoot).toBe('~\\mirror\\')
+  expect(normalizeConfig({ archiveRoot: '/srv/a\\' }, '/home/tester').archiveRoot).toBe('/srv/a\\')
+  expect(normalizeConfig({ archiveRoot: '~/x/y/' }, '/home/tester\\').archiveRoot).toBe('/home/tester\\/x/y')
+})
+
 test('timezone: a valid name is kept, an invalid one ignored', () => {
   expect(validZone('Europe/Rome')).toBe(true)
   expect(validZone('Mars/Olympus')).toBe(false)

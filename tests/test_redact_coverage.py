@@ -59,6 +59,21 @@ HOSTILE = {
     "unfinished cli-credentials": "-u " + "a" * 40,
     "blank env lines": " \t\n",
     "repeated unfinished env key": "export A_KEY=\n",
+    # Windows rules (2.0.2): each of these is a prefix that the rule can start on, over and over, and never finish
+    "repeated set": "set A_KEY=",
+    "repeated setx": 'setx A_KEY "',
+    "repeated $env": "$env:A_KEY =",
+    "repeated -Password": "-Password ",
+    "repeated net use": "net use ",
+    "repeated net user": "net user a ",
+    "repeated sqlcmd": "sqlcmd -x ",
+    "repeated psexec": "psexec -x ",
+    "repeated ConvertTo": 'ConvertTo-SecureString "',
+    "repeated env table": "A_KEY  \n",
+    "repeated env list": "Name : A_KEY\n",
+    "repeated reg row": "    A_KEY  REG_SZ \n",
+    "repeated reg add": "reg add /v a_key ",
+    "long upper run": "A" * 1000 + "  ",
 }
 
 

@@ -4,6 +4,7 @@ The repository is public, so nothing here names a real person, host or path: the
 import importlib.util
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,17 @@ def test_in_ci_an_unusable_terms_file_names_no_term(tmp_path, monkeypatch, capsy
 
 # ---------------------------------------------------------------- the mod's lint.sh follows the same rules
 
+def _bash() -> str:
+    """The bash that runs lint.sh. On Windows `bash` on the PATH can be the WSL launcher (bash.exe in System32, which has
+    no distribution to run), so Git for Windows' own bash, next to the git that is on the PATH, comes first."""
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        for rel in ("../bin/bash.exe", "../../bin/bash.exe", "../../usr/bin/bash.exe"):
+            if git and (Path(git).parent / rel).resolve().exists():
+                return str((Path(git).parent / rel).resolve())
+    return shutil.which("bash") or "bash"
+
+
 def _mod_copy(tmp_path):
     dst = tmp_path / "mod"
     shutil.copytree(ROOT / "claude-code" / "chronicle", dst, ignore=shutil.ignore_patterns("node_modules", ".claude-plugin"))
@@ -236,7 +248,7 @@ def _lint_sh(mod, env_terms=None):
     env = {k: v for k, v in os.environ.items() if k != lint.ENV_TERMS}
     if env_terms:
         env[lint.ENV_TERMS] = str(env_terms)
-    return subprocess.run(["bash", str(mod / "scripts" / "lint.sh")], capture_output=True, text=True, env=env)
+    return subprocess.run([_bash(), str(mod / "scripts" / "lint.sh")], capture_output=True, text=True, env=env)
 
 
 def test_mod_lint_standalone_uses_the_private_terms_file(tmp_path):
@@ -262,7 +274,7 @@ def test_mod_lint_standalone_uses_the_private_terms_file(tmp_path):
     terms.write_text(f"word:{NAME}\n")
     (mod / "README.md").write_text(f"a note about {NAME}\n")
     import os
-    ci = subprocess.run(["bash", str(mod / "scripts" / "lint.sh")], capture_output=True, text=True,
+    ci = subprocess.run([_bash(), str(mod / "scripts" / "lint.sh")], capture_output=True, text=True,
                         env={**os.environ, "CI": "true", lint.ENV_TERMS: str(terms)})
     assert ci.returncode == 1 and "README.md:1" in ci.stdout and NAME not in ci.stdout + ci.stderr
 

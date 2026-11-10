@@ -21,9 +21,11 @@ import os
 import re
 from typing import Iterable
 
+from . import textio
+
 #: Bump when the patterns change in a way that should re-redact what is already imported: the import pipeline mixes
 #: it into every unit's hash, so an unchanged input is read again once.
-REDACTION_VERSION = 2
+REDACTION_VERSION = 3   # 3: Windows shapes (cmd set/setx, PowerShell $env: and -Password, env listings, reg, net use)
 
 #: Longer strings are cut here first (callers keep far less than this).
 SCAN_MAX = 512 * 1024
@@ -62,6 +64,9 @@ def scrub_private_keys(s: str) -> tuple[str, int]:
 # corpus checks that for every shape listed, it is not proven for arbitrary input. The chronicle mod keeps a twin of
 # this list in claude-code/chronicle/hooks/register.ts: change both together.
 _FLAG_VALUE = r"""('[^']*'|"[^"]*"|[^\s"']+)"""
+# A word that makes a name secret-looking, and a whole variable name containing one (bounded: no backtracking blow-up).
+_WIN_WORD = r"(?:key|token|secret|passw(?:or)?d|pwd|pass|credential)"
+_WIN_NAME = r"(?:[A-Za-z_][\w.-]{0,60}?)?" + _WIN_WORD + r"[\w.-]{0,60}"
 PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("api-key", re.compile(r"\bsk-(?:ant-|or-v1-|proj-)?[A-Za-z0-9_-]{20,}"), "[redacted:api-key]"),
     ("api-key", re.compile(r"\bxai-[A-Za-z0-9_-]{16,}"), "[redacted:api-key]"),
@@ -126,6 +131,55 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("env-assignment",
      re.compile(r"^([ \t]*(?:export\s+)?[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS)[A-Z0-9_]*\s*=\s*).+$", re.M),
      r"\1[redacted:secret]"),
+    # --- Windows: cmd, PowerShell, wmic, reg, cmdkey -------------------------------------------------------------------
+    # cmd:  set API_KEY=value   set "API_KEY=value"   setx API_KEY value   (any value length: the name says it is secret)
+    ("win-set", re.compile(r'(?<![\w-])(@?set[ \t]+"' + _WIN_NAME + r'=)(?!\[redacted)[^"\r\n]*', re.I), r"\1[redacted:secret]"),
+    ("win-set", re.compile(r"(?<![\w-])(@?set[ \t]+" + _WIN_NAME + r"=)(?!\[redacted)[^\s&|]+", re.I), r"\1[redacted:secret]"),
+    ("win-set", re.compile(r'(?<![\w-])(setx(?:\.exe)?[ \t]+"?' + _WIN_NAME + r'"?[ \t]+)(?![\[/])' + _FLAG_VALUE, re.I),
+     r"\1[redacted:secret]"),
+    # PowerShell:  $env:API_KEY = "value"   [Environment]::SetEnvironmentVariable("API_KEY", "value", "User")
+    ("win-env",
+     re.compile(r"((?<![\w-])\$\{?env:" + _WIN_NAME + r"\}?[ \t]*=[ \t]*)(?!\[redacted|[$(<{%@]|[A-Za-z]+-[A-Za-z])" + _FLAG_VALUE,
+                re.I), r"\1[redacted:secret]"),
+    ("win-env",
+     re.compile(r"(SetEnvironmentVariable\([ \t]*[\"']" + _WIN_NAME + r"[\"'][ \t]*,[ \t]*)(?!\[redacted)(\"[^\"]*\"|'[^']*')",
+                re.I), r"\1[redacted:secret]"),
+    # PowerShell and Windows tools take -Password value, -Token:value, /pass:value, /RP value (schtasks), -pw value (plink)
+    ("win-flag",
+     re.compile(r"(?<![\w-])(-(?:password|passwd|pass|pwd|pw|passphrase|token|secret|apikey|accesstoken|clientsecret|secretkey)"
+                r"(?::|[ \t]+))(?!\[redacted|-|[$(@])" + r"(\"[^\"]*\"|'[^']*'|[^\s\"']{3,})", re.I),
+     r"\1[redacted:secret]"),
+    ("win-flag", re.compile(r"(?<![\w/.-])(/(?:password|passwd|pass|pwd|token|secret|apikey)[:=])(?!\[redacted)" + _FLAG_VALUE, re.I),
+     r"\1[redacted:secret]"),
+    ("win-flag", re.compile(r"(?<![\w/.-])(/RP[ \t]+)(?!\[redacted|/|\*)" + _FLAG_VALUE),
+     r"\1[redacted:password]"),
+    ("win-flag", re.compile(r"(\bnet(?:\.exe)?[ \t]+use[ \t]+(?:\S+[ \t]+)?\\\\\S+[ \t]+)(?![/*]|\[redacted)" + _FLAG_VALUE, re.I),
+     r"\1[redacted:password]"),
+    ("win-flag", re.compile(r"(\bnet(?:\.exe)?[ \t]+user[ \t]+\S+[ \t]+)(?![/*]|\[redacted)" + _FLAG_VALUE, re.I),
+     r"\1[redacted:password]"),
+    ("win-flag", re.compile(r"(\bsqlcmd(?:\.exe)?\b[^\n]{0,200}?[ \t]-P[ \t]*)(?![\[\s])" + _FLAG_VALUE, re.I),
+     r"\1[redacted:password]"),
+    ("win-flag", re.compile(r"(\b[Pp]s[Ee]xec(?:64)?(?:\.exe)?\b[^\n]{0,200}?[ \t]-p[ \t]+)(?!\[redacted)" + _FLAG_VALUE),
+     r"\1[redacted:password]"),
+    ("win-flag",
+     re.compile(r"(\bConvertTo-SecureString[ \t]+(?:-String[ \t]+)?)(?!\[redacted)(\"[^\"]*\"|'[^']*')(?=[^\n]{0,200}-AsPlainText)", re.I),
+     r"\1[redacted:password]"),
+    # An environment listing: `gci env:` (Name, then Value, in columns), `gci env: | fl` (Name : ... / Value : ...) and
+    # `wmic environment` (Name=... / VariableValue=...).
+    ("win-env-listing",
+     re.compile(r"^((?:[A-Z][A-Z0-9_]{0,60}?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|PASS|CREDENTIALS?)[A-Z0-9_]{0,60}[ \t]{2,})(?![ \t]|\[redacted).+$",
+                re.M), r"\1[redacted:secret]"),
+    ("win-env-listing",
+     re.compile(r"^([ \t]{0,16}Name[ \t]{0,16}[:=][ \t]{0,16}[A-Za-z0-9_]{0,60}?" + _WIN_WORD + r"[A-Za-z0-9_]{0,60}[ \t]*\r?\n"
+                r"[ \t]*(?:Value|VariableValue)[ \t]*[:=][ \t]*)(?![ \t]|\[redacted).+$", re.I | re.M), r"\1[redacted:secret]"),
+    # reg query output:  <name>    REG_SZ    <value>   and   reg add ... /v <name> /d <value>
+    ("win-registry",
+     # The value name runs to the first double space (one scan, no second lazy window), and a lookahead finds the secret word in it.
+     re.compile(r"^([ \t]{1,16}(?![ \t])(?=[^\r\n]{0,120}?" + _WIN_WORD + r")(?:(?![ \t]{2})[^\r\n]){1,120}[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$",
+                re.I | re.M), r"\1[redacted:secret]"),
+    ("win-registry",
+     re.compile(r"(\breg(?:\.exe)?[ \t]+add\b(?:(?!/v[ \t])[^\r\n]){0,80}/v[ \t]+\"?[^\s\"]{0,40}?" + _WIN_WORD + r"[^\s\"]{0,40}\"?(?:(?!/d[ \t])[^\r\n]){0,40}/d[ \t]+)"
+                r"(?!\[redacted)" + _FLAG_VALUE, re.I), r"\1[redacted:secret]"),
     # name [: or =] value, with the name anywhere in the word (DB_PASSWORD, "apiKey", secret access key). Values that
     # are placeholders (${VAR}, <your-key>, %s) or already redacted are left; short values (a type name) are left.
     ("assignment",
@@ -196,8 +250,7 @@ def load_known(paths: Iterable[str], json_configs: Iterable[str] = ()) -> list[s
             files = [p]
         for f in files:
             try:
-                with open(f, errors="ignore") as fh:
-                    text = fh.read()
+                text = textio.read_text(f)   # UTF-8, with or without a BOM, or UTF-16: what Windows tools write
             except OSError:
                 continue
             for m in re.finditer(r"(?m)^\s*[A-Za-z0-9_]+\s*[=:]\s*[\"']?([^\s\"'#]{12,})", text):
@@ -206,7 +259,7 @@ def load_known(paths: Iterable[str], json_configs: Iterable[str] = ()) -> list[s
                 vals.add(m.group(0))
     for p in json_configs:
         try:
-            with open(os.path.expanduser(str(p))) as fh:
+            with open(os.path.expanduser(str(p)), encoding="utf-8-sig") as fh:
                 cfg = json.load(fh)
         except (OSError, ValueError):
             continue

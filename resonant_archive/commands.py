@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import config, db, importers, pipeline
+from . import config, db, fsutil, importers, pipeline, textio
 from .importers.base import Options
 
 ENV_PASSWORD = "POSTGRES_PASSWORD"
@@ -60,7 +60,7 @@ def weak_password(pw: str | None) -> bool:
 
 def _read_env(env: Path) -> dict[str, str]:
     try:
-        text = env.read_text(encoding="utf-8")
+        text = textio.read_text(env)
     except OSError:
         return {}
     return dict(line.split("=", 1) for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#"))
@@ -83,24 +83,21 @@ def write_env_file(project_dir: Path, port: int = config.DEFAULT_PORT, *, overwr
     if env.exists() and not overwrite:
         values = _read_env(env)
         if not weak_password(values.get(ENV_PASSWORD)):
-            os.chmod(env, 0o600)
+            fsutil.ensure_private(env)
             return env, values[ENV_PASSWORD]
         other = {k: v for k, v in values.items() if k != ENV_PASSWORD}
     other.setdefault(ENV_PORT, str(port))
     password = secrets.token_urlsafe(24)
-    tmp = env.with_name(env.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"{ENV_PASSWORD}={password}\n" + "".join(f"{k}={v}\n" for k, v in other.items()))
-    os.replace(tmp, env)
-    os.chmod(env, 0o600)
+    fsutil.write_private_text(env, f"{ENV_PASSWORD}={password}\n" + "".join(f"{k}={v}\n" for k, v in other.items()))
     return env, password
 
 
 def default_project_dir() -> Path:
     """Where ``init --docker`` keeps docker-compose.yml and .env when --project-dir is not given: the data folder,
     not the current directory (a stray .env in a repository is how passwords get committed)."""
-    return config.data_dir() / "docker"
+    new = config.data_dir() / "docker"
+    old = Path.home() / ".local" / "share" / config.APP / "docker"   # where Windows kept it before it had its own folder
+    return old if fsutil.WINDOWS and not new.exists() and old.exists() else new
 
 
 def prepare_project_dir(project_dir: Path) -> Path:
@@ -108,7 +105,7 @@ def prepare_project_dir(project_dir: Path) -> Path:
     project_dir = Path(project_dir).expanduser()
     if not project_dir.exists():
         project_dir.mkdir(parents=True, mode=0o700)
-        os.chmod(project_dir, 0o700)
+        fsutil.ensure_private(project_dir, directory=True)
     return project_dir.resolve()
 
 
@@ -155,7 +152,8 @@ def init_docker(project_dir: str | Path, *, port: int = config.DEFAULT_PORT, wai
         raise config.ConfigError("docker was not found on PATH. Install it, or use your own Postgres: "
                                  "`resonant-archive init --dsn postgresql://...` (see docs/SCHEMA.md)")
     _, password = write_env_file(project_dir, port)
-    up = subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=project_dir, capture_output=True, text=True)
+    up = subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=project_dir, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", creationflags=fsutil.NO_WINDOW)
     if up.returncode != 0:
         raise db.DatabaseError("docker compose up failed: " + " ".join(up.stderr.split())[:400])
     dsn = docker_dsn(password, port)

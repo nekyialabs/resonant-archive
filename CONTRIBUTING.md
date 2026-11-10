@@ -32,7 +32,7 @@ Open a GitHub Issue to discuss before writing code:
 ## Help wanted
 
 - **Direct importers** for raw ChatGPT and claude.ai `conversations.json` exports (we need real-export checks, run locally)
-- **Windows support** for the mod and the CLI
+- **PostgreSQL-backed tests on Windows.** The mod and the Python package run on Windows and CI runs everything that needs no database there; the database tests run on Linux only, and nobody has run them against a native Windows PostgreSQL
 - **Benchmarks** — reproducible retrieval quality and embedding speed numbers on stated machines
 - **More tests** for edge cases in importers and redaction
 
@@ -54,11 +54,22 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+On Windows (PowerShell):
+
+```powershell
+git clone https://github.com/nekyialabs/resonant-archive.git
+cd resonant-archive
+py -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
 Run the tests:
 
 ```bash
 pytest tests/
 ```
+
+On Windows a few tests skip for a reason that is printed (`pytest -rs`): symbolic links need Developer Mode or an elevated shell, and there are no FIFOs. The repository's `.gitattributes` keeps text files as LF on every platform; do not commit CRLF. The mod's `scripts/lint.sh` and the `private-strip` lint need a `bash` (Git for Windows has one) and a working `python` or `python3` on the path.
 
 Tests that need Postgres skip themselves when none is available. For the full set, bring up the bundled one
 (`resonant-archive init --docker --up`). The tests use synthetic fixtures only; never add a real conversation to the

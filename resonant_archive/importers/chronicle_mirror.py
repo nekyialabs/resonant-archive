@@ -69,7 +69,7 @@ class ChronicleMirror(Importer):
                 if safety.problem(f, path):
                     continue
                 try:
-                    with open(f, encoding="utf-8", errors="replace") as fh:
+                    with open(f, encoding="utf-8-sig", errors="replace") as fh:
                         first = json.loads(fh.readline(safety.MAX_LINE_CHARS))
                 except (OSError, ValueError, RecursionError):
                     continue
@@ -94,7 +94,7 @@ class ChronicleMirror(Importer):
         seen: set[str] = set()
         for f in unit.files:
             src = f"{f.parent.name}/{f.name}"
-            with open(f, encoding="utf-8", errors="replace") as fh:
+            with open(f, encoding="utf-8-sig", errors="replace") as fh:
                 for ln, line in safety.iter_lines(fh, stats):
                     if not line.strip():
                         continue

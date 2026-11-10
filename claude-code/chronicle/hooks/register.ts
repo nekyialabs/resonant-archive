@@ -112,14 +112,15 @@ export function validZone(z: string): boolean {
   try { new Intl.DateTimeFormat('en-GB', { timeZone: z }); return true } catch { return false }
 }
 
-function expandHome(p: string, home: string | undefined): string {
-  if (p === '~' || p.startsWith('~/')) return home ? `${home.replace(/\/+$/, '')}${p.slice(1)}` : ''
+function expandHome(p: string, home: string | undefined, windows: boolean): string {
+  // `~\dir` and backslash trimming are Windows spellings only: on Linux and macOS a backslash is an ordinary character
+  if (p === '~' || p.startsWith('~/') || (windows && p.startsWith('~\\'))) return home ? `${home.replace(windows ? /[\\/]+$/ : /\/+$/, '')}${p.slice(1)}` : ''
   return p
 }
 
 // Pure. Never throws: the mod must not fail to load over its settings. Wrong types fall back to the default, unknown
 // keys are listed in `ignored`. The new nested keys win over the older flat ones when both are present.
-export function normalizeConfig(raw: unknown, home?: string): Cfg {
+export function normalizeConfig(raw: unknown, home?: string, windows = false): Cfg {
   const r = rec(raw)
   const compaction = rec(r.compaction), memories = rec(r.memories), mirrorC = rec(r.mirror), squish = rec(r.squish)
   const line = rec(r.contextLine), tools = rec(r.tools), archive = rec(r.archive), names = rec(r.names)
@@ -128,11 +129,11 @@ export function normalizeConfig(raw: unknown, home?: string): Cfg {
   const warnAt = pickPct(line.warnAt, 75)
   const urgent = pickPct(line.urgentAt, 90)
   const command = Array.isArray(archive.command) ? archive.command.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
-  const root = expandHome(pickStr(r.archiveRoot, DEFAULT_ROOT).trim() || DEFAULT_ROOT, home)
+  const root = expandHome(pickStr(r.archiveRoot, DEFAULT_ROOT).trim() || DEFAULT_ROOT, home, windows)
   const min = pickNum(firstDefined(memories.chunkMinTokens, r.chunkMinTokens), DEFAULT_CHUNK_MIN)
   const zone = pickStr(r.timezone, '').trim()
   return {
-    archiveRoot: root.replace(/\/+$/, '') || root,
+    archiveRoot: root.replace(windows ? /[\\/]+$/ : /\/+$/, '') || root,
     timezone: validZone(zone) ? zone : '',
     names: { user: pickStr(names.user, '').trim() || 'You', agent: pickStr(names.agent, '').trim() || 'Assistant' },
     mirrorEnabled: pickBool(mirrorC.enabled, true),
@@ -167,6 +168,8 @@ let rgBin = 'rg'
 // Windows host: the mirror is appended through PowerShell and the archive is listed, searched and read through $.fs
 // (no sh, rg or cat there). Set from the environment the first time the settings are read.
 let isWin = false
+// The archive root without its trailing separators: only '/' on Linux and macOS, '/' and '\' on Windows.
+const trimRoot = (p: string): string => p.replace(isWin ? /[\\/]+$/ : /\/+$/, '')
 let memoriesOn = false
 let recallNames: readonly string[] = [RECALL_TOOL]
 let zoneToStore: string | undefined // set when the archive has no .chronicle.json yet: flush writes it once
@@ -187,11 +190,13 @@ async function cfgOf($: EngineInterface): Promise<Cfg> {
     if (!/ENOENT|no such file|not found|does not exist|no implementation/i.test(why(err))) { try { $.ui.log(`chronicle: chronicle.json not used (${why(err)}); defaults apply`, { to: 'debug' }) } catch {} }
   }
   let home: string | undefined
-  try { home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) } catch {}
   let os = ''
   try { os = (await $.env.get('OS')) ?? '' } catch {}
+  // On Windows the profile folder is USERPROFILE. HOME, when something set it, may be an MSYS path (/c/Users/me, from
+  // Git Bash) that PowerShell and $.fs cannot open, so it is only the fallback there.
+  try { home = os === 'Windows_NT' ? ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))) : ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))) } catch {}
   isWin = os === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(home ?? '')
-  const cfg = normalizeConfig(raw, home)
+  const cfg = normalizeConfig(raw, home, isWin)
   if (cfg.ignored.length) { try { $.ui.log(`chronicle: unknown settings ignored: ${cfg.ignored.join(', ')}`, { to: 'debug' }) } catch {} }
   // The day folders are named in one zone for the life of an archive: the one it recorded, unless the settings name one.
   let stored = ''
@@ -356,7 +361,8 @@ async function readWhole($: EngineInterface, paths: string[]): Promise<{ stdout:
   for (const p of paths) {
     try {
       const t = String(await $.fs.read(p))
-      stdout += t.endsWith('\n') || !t ? t : `${t}\n`
+      const u = t.replace(/\r\n/g, '\n') // a mirror file saved with CRLF reads the same
+      stdout += u.endsWith('\n') || !u ? u : `${u}\n`
     } catch (err) {
       if (/MiB|too large|exceeds/i.test(why(err))) isStdoutTruncated = true; else exitCode = 1
     }
@@ -396,7 +402,7 @@ async function grepLinesWin($: EngineInterface, patterns: string[], paths: strin
       if (!/ENOENT|no such file|not found|does not exist/i.test(w)) error ??= w.slice(0, 200)
       continue
     }
-    for (const line of text.split('\n')) {
+    for (const line of text.split(/\r?\n/)) {
       if (!line) continue
       if (needles.length) { const low = line.toLowerCase(); if (!needles.some(n => low.includes(n))) continue }
       if (used + line.length > GREP_OUT_CAP) { cut = true; break }
@@ -458,6 +464,9 @@ export function scrubPrivateKeys(s: string): string {
 // The twin of PATTERNS in resonant_archive/redact.py: change both together. A second pass over redacted text is meant to
 // change nothing (the tests check it for every shape listed); it is not proven for arbitrary input.
 const FLAG_VALUE = String.raw`('[^']*'|"[^"]*"|[^\s"']+)`
+// A word that makes a name secret-looking, and a whole variable name containing one (bounded: no backtracking blow-up).
+const WIN_WORD = String.raw`(?:key|token|secret|passw(?:or)?d|pwd|pass|credential)`
+const WIN_NAME = String.raw`(?:[A-Za-z_][\w.-]{0,60}?)?` + WIN_WORD + String.raw`[\w.-]{0,60}`
 const REDACTIONS: readonly [RegExp, string][] = [
   [/\bsk-(?:ant-|or-v1-|proj-)?[A-Za-z0-9_-]{20,}/g, '[redacted:api-key]'],
   [/\bxai-[A-Za-z0-9_-]{16,}/g, '[redacted:api-key]'],
@@ -494,6 +503,30 @@ const REDACTIONS: readonly [RegExp, string][] = [
   [/\bmcp_[0-9a-f]{8,}/g, '[redacted:secret-path]'],
   [/([?&](?:key|token|api_key|apikey|access_token|sig|secret)=)[^&\s"'<>]+/gi, '$1[redacted]'],
   [/^([ \t]*(?:export\s+)?[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS)[A-Z0-9_]*\s*=\s*).+$/gm, '$1[redacted:secret]'],
+  // --- Windows: cmd, PowerShell, wmic, reg, cmdkey (the twin of the "win-*" rules in redact.py) ---
+  // cmd:  set API_KEY=value   set "API_KEY=value"   setx API_KEY value   (any value length: the name says it is secret)
+  [new RegExp(String.raw`(?<![\w-])(@?set[ \t]+"` + WIN_NAME + String.raw`=)(?!\[redacted)[^"\r\n]*`, 'gi'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(?<![\w-])(@?set[ \t]+` + WIN_NAME + String.raw`=)(?!\[redacted)[^\s&|]+`, 'gi'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(?<![\w-])(setx(?:\.exe)?[ \t]+"?` + WIN_NAME + String.raw`"?[ \t]+)(?![\[/])` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
+  // PowerShell:  $env:API_KEY = "value"   [Environment]::SetEnvironmentVariable("API_KEY", "value", "User")
+  [new RegExp(String.raw`((?<![\w-])\$\{?env:` + WIN_NAME + String.raw`\}?[ \t]*=[ \t]*)(?!\[redacted|[$(<{%@]|[A-Za-z]+-[A-Za-z])` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(SetEnvironmentVariable\([ \t]*["']` + WIN_NAME + String.raw`["'][ \t]*,[ \t]*)(?!\[redacted)("[^"]*"|'[^']*')`, 'gi'), '$1[redacted:secret]'],
+  // PowerShell and Windows tools take -Password value, -Token:value, /pass:value, /RP value (schtasks), -pw value (plink)
+  [/(?<![\w-])(-(?:password|passwd|pass|pwd|pw|passphrase|token|secret|apikey|accesstoken|clientsecret|secretkey)(?::|[ \t]+))(?!\[redacted|-|[$(@])("[^"]*"|'[^']*'|[^\s"']{3,})/gi, '$1[redacted:secret]'],
+  [new RegExp(String.raw`(?<![\w/.-])(/(?:password|passwd|pass|pwd|token|secret|apikey)[:=])(?!\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(?<![\w/.-])(/RP[ \t]+)(?!\[redacted|/|\*)` + FLAG_VALUE, 'g'), '$1[redacted:password]'],
+  [new RegExp(String.raw`(\bnet(?:\.exe)?[ \t]+use[ \t]+(?:\S+[ \t]+)?\\\\\S+[ \t]+)(?![/*]|\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:password]'],
+  [new RegExp(String.raw`(\bnet(?:\.exe)?[ \t]+user[ \t]+\S+[ \t]+)(?![/*]|\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:password]'],
+  [new RegExp(String.raw`(\bsqlcmd(?:\.exe)?\b[^\n]{0,200}?[ \t]-P[ \t]*)(?![\[\s])` + FLAG_VALUE, 'gi'), '$1[redacted:password]'],
+  [new RegExp(String.raw`(\b[Pp]s[Ee]xec(?:64)?(?:\.exe)?\b[^\n]{0,200}?[ \t]-p[ \t]+)(?!\[redacted)` + FLAG_VALUE, 'g'), '$1[redacted:password]'],
+  [/(\bConvertTo-SecureString[ \t]+(?:-String[ \t]+)?)(?!\[redacted)("[^"]*"|'[^']*')(?=[^\n]{0,200}-AsPlainText)/gi, '$1[redacted:password]'],
+  // An environment listing: `gci env:` (Name, then Value, in columns), `gci env: | fl` (Name : ... / Value : ...) and
+  // `wmic environment` (Name=... / VariableValue=...)
+  [/^((?:[A-Z][A-Z0-9_]{0,60}?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|PASS|CREDENTIALS?)[A-Z0-9_]{0,60}[ \t]{2,})(?![ \t]|\[redacted).+$/gm, '$1[redacted:secret]'],
+  [new RegExp(String.raw`^([ \t]{0,16}Name[ \t]{0,16}[:=][ \t]{0,16}[A-Za-z0-9_]{0,60}?` + WIN_WORD + String.raw`[A-Za-z0-9_]{0,60}[ \t]*\r?\n[ \t]*(?:Value|VariableValue)[ \t]*[:=][ \t]*)(?![ \t]|\[redacted).+$`, 'gim'), '$1[redacted:secret]'],
+  // reg query output:  <name>    REG_SZ    <value>   and   reg add ... /v <name> /d <value>
+  [new RegExp(String.raw`^([ \t]{1,16}(?![ \t])(?=[^\r\n]{0,120}?` + WIN_WORD + String.raw`)(?:(?![ \t]{2})[^\r\n]){1,120}[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$`, 'gim'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(\breg(?:\.exe)?[ \t]+add\b(?:(?!/v[ \t])[^\r\n]){0,80}/v[ \t]+"?[^\s"]{0,40}?` + WIN_WORD + String.raw`[^\s"]{0,40}"?(?:(?!/d[ \t])[^\r\n]){0,40}/d[ \t]+)(?!\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
   // name [: or =] value, the name anywhere in the word (DB_PASSWORD, "apiKey"); placeholders and short values stay
   [/((?:secret[ _-]?access[ _-]?key|secret[ _-]?key|access[ _-]?key|api[ _-]?key|private[ _-]?key|client[ _-]?secret|secret|password|passwd|passphrase|token|credentials?)[A-Za-z0-9_-]{0,30}["']?[ \t]*[:=][ \t]*["']?)(?!\[redacted|[$<{%])[^\s"',;}\]]{8,}/gi, '$1[redacted:secret]'],
   // a short value after an explicit password key (the rule above wants 8+); a type name or a call is left, and so is a
@@ -537,13 +570,13 @@ function capText(s: string, max: number): string {
 // Best effort, not a guarantee: the common shapes only (files by name, commands that print an environment or a
 // credential, searches whose pattern or path names a secret). The twin of resonant_archive/secret_sources.py: change
 // both together, and keep the case lists in both test suites the same.
-const SECRET_FILE_SOURCE = String.raw`[/.](?:env(?:\.[\w-]{1,40}){0,4}|dev\.vars|mcp\.json|pem|key|netrc|pgpass|environ|p12|pfx|jks|keystore|ppk|kdbx|htpasswd)$|(?:^|[/\\])\.env[\w.~*?-]*$|(?:^|[/\\])\.(?:npmrc|pypirc|git-credentials|vault-token|bash_history|zsh_history)$|\.docker/config\.json$|\.kube/config$|(?:^|[/.\\])(?:credentials(?:\.json)?|id_[a-z0-9]+)$|(?:^|[/\\])secrets?\.[\w.*-]+$|terraform\.tfstate[\w.-]{0,40}$|\.tfvars(?:\.json)?$|/proc/[^/\s]+/(?:environ|cmdline)$|/etc/g?shadow$|(?:^|[/\\])[\w.-]{0,100}(?:service[-_]?account|application_default_credentials)[\w.-]{0,100}\.json$|(?:^|[/\\])client_secrets?\.json$|/private/`
+const SECRET_FILE_SOURCE = String.raw`[/.](?:env(?:\.[\w-]{1,40}){0,4}|dev\.vars|mcp\.json|pem|key|netrc|pgpass|environ|p12|pfx|jks|keystore|ppk|kdbx|htpasswd)$|(?:^|[/\\])\.env[\w.~*?-]*$|(?:^|[/\\])\.(?:npmrc|pypirc|git-credentials|vault-token|bash_history|zsh_history)$|\.docker[/\\]config\.json$|\.kube[/\\]config$|ConsoleHost_history\.txt$|[/\\]Microsoft[/\\](?:Credentials|Protect|Vault)[/\\]|[/\\]config[/\\](?:SAM|SECURITY|SYSTEM)$|(?:^|[/\\])NTUSER\.DAT$|\.azure[/\\](?:accessTokens\.json|msal_token_cache\.\w+|azureProfile\.json)$|[/\\]gh[/\\]hosts\.yml$|[/\\]gcloud[/\\](?:credentials|access_tokens)\.db$|(?:^|[/.\\])(?:credentials(?:\.json)?|id_[a-z0-9]+)$|(?:^|[/\\])secrets?\.[\w.*-]+$|terraform\.tfstate[\w.-]{0,40}$|\.tfvars(?:\.json)?$|/proc/[^/\s]+/(?:environ|cmdline)$|/etc/g?shadow$|(?:^|[/\\])[\w.-]{0,100}(?:service[-_]?account|application_default_credentials)[\w.-]{0,100}\.json$|(?:^|[/\\])client_secrets?\.json$|[/\\]private[/\\]`
 const SECRET_HINT_SOURCE = String.raw`pass(?:word|wd|phrase|code)|secret|token|api[_ -]?key|credential|private[_ -]?key|bearer|\.env\b|\benv\b|id_rsa|id_ed25519|\.pem\b|\.pfx|\.p12|\.npmrc|\.netrc|\.pgpass|BEGIN[ \w]{0,40}PRIVATE`
 const SECRET_PROGRAM_SOURCE = String.raw`env(?:\s|$)|\S*/env\s*$|\S*/env\s+-\S+|(?:\S*/)?(?:printenv|ps)(?:\s|$)|(?:\S*/)?pm2\s+(?:env|show|describe|prettylist|jlist)\b|set\s*$|(?:export|declare|typeset)(?:\s+-[A-Za-z]+)?\s*$|compgen\s+-[ve]\b|history(?:\s|$)|pgrep\s+-[A-Za-z]*[af]|(?:docker|podman)(?:\s+compose|-compose)?\s+(?:config|inspect)\b|(?:docker|podman)\s+(?:exec|run)\b[^\n]*\s(?:env|printenv)(?:\s|$)|kubectl\s+(?:(?:get|describe)\s+secrets?\b|config\s+view\b)|systemctl\s+(?:--?\S+\s+)*(?:show|cat)\b|ssh-add\s+-[A-Za-z]*[Ll]|gh\s+auth\s+(?:token\b|status\b[^\n]*--show-token)|gcloud\s+auth\s+(?:print-access-token|print-identity-token|application-default\s+print-access-token)|aws\s+(?:configure\s+(?:get|list|export-credentials)|secretsmanager\s+get-secret-value|ssm\s+get-parameters?(?:-by-path)?|sts\s+get-session-token)|vault\s+(?:read|kv\s+get|token\s+lookup)|op\s+(?:read|item\s+get|inject)`
 const SECRET_FILE = new RegExp(SECRET_FILE_SOURCE, 'i')
 const SECRET_HINT = new RegExp(SECRET_HINT_SOURCE, 'i')
 const SECRET_PROGRAM = new RegExp('^(?:' + SECRET_PROGRAM_SOURCE + ')')
-const SEARCH_COMMAND = new RegExp(String.raw`^(?:\S*/)?(?:grep|egrep|fgrep|zgrep|rg|ag|ack|find|locate|fd)(?:\s|$)`)
+const SEARCH_COMMAND = new RegExp(String.raw`^(?:\S*[/\\])?(?:grep|egrep|fgrep|zgrep|rg|ag|ack|find|locate|fd|findstr|select-string|sls)(?:\.exe)?(?:\s|$)`, 'i')
 // Prefixes that run the next command, peeled off one at a time (sudo is tried with and without an option argument).
 const PEELERS: readonly RegExp[] = [
   new RegExp(String.raw`^[A-Za-z_]\w*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+`),
@@ -554,13 +587,151 @@ const PEELERS: readonly RegExp[] = [
   new RegExp(String.raw`^(?:nice|ionice|stdbuf|timeout)\s+(?:-\S+\s+(?:\d+\s+)?)*(?:\d+[smhd]?\s+)?`),
 ]
 const SHELL_C = new RegExp(String.raw`^(?:\S*/)?(?:ba|z|da|k|fi|a|c)?sh\s+(?:-\S+\s+)*?-[A-Za-z]*c\s+(.+)$`)
+// cmd /c "..."   powershell -NoProfile -Command "..."   pwsh -c "..."
+const WIN_SHELL_C = new RegExp(String.raw`^(?:\S*[/\\])?(?:cmd|powershell|pwsh)(?:\.exe)?\s+(?:[-/]\S+\s+)*?[-/](?:c|k|command)\s+(.+)$`, 'i')
+// What cmd prints with `set NAME`: every variable whose name starts with NAME.
+const WIN_PROGRAM = /^set\s+[A-Za-z_]\w*\s*$/i
+// Windows and PowerShell commands that print the environment, command lines or credentials, found anywhere in the command
+// line (`Get-Process | Select CommandLine` has the program and its argument in different segments). Each rule has a cheap
+// needle that must be in the lower-cased command before the regex is tried. The twin of _WIN_READS in secret_sources.py.
+const WIN_READS: readonly (readonly [string, RegExp])[] = ([
+  // gci env:   dir env:   Get-Content env:NAME   Get-Item -Path Env:*
+  ['env:', String.raw`(?<![\w-])(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|type|cat|more)\s+(?:-(?:path|literalpath)\s+)?["']?env:`],
+  ['environment]', String.raw`\[(?:system\.)?environment\]::getenvironmentvariables?\b`],
+  // reading a variable whose name says it is secret: $env:GITHUB_TOKEN, %API_KEY%
+  ['env:', String.raw`\$\{?env:[A-Za-z0-9_]{0,40}(?:key|token|secret|passw|pwd|pass|credential)`],
+  ['%', String.raw`%[A-Za-z0-9_]{0,40}(?:key|token|secret|passw|pwd|credential)[A-Za-z0-9_]{0,40}%`],
+  // command lines of running processes and services (they carry passwords and tokens as arguments)
+  ['win32_', String.raw`\bwin32_(?:process|service|environment)\b`],
+  ['wmic', String.raw`\bwmic(?:\.exe)?\s+(?:process|service|environment)\b`],
+  ['commandline', String.raw`\b(?:get-process|gps)\b[^\n]{0,300}?\bcommandline\b`],
+  // stored credentials
+  ['cmdkey', String.raw`\bcmdkey(?:\.exe)?\s+/l(?:ist)?\b`],
+  ['vaultcmd', String.raw`\bvaultcmd(?:\.exe)?\s+/list`],
+  ['credential', String.raw`\bget-(?:stored)?credential\b|\.getnetworkcredential\(`],
+  ['get-secret', String.raw`\bget-secret(?:info)?\b`],
+  ['passwordvault', String.raw`\bpasswordvault\b`],
+  ['convertfrom-securestring', String.raw`\bconvertfrom-securestring\b`],
+  ['ptrtostring', String.raw`\bptrtostring(?:auto|bstr|uni)\b`],
+  ['netsh', String.raw`\bnetsh\s+wlan\s+show\s+profiles?\b[^\n]{0,200}?key\s*=\s*clear`],
+  // the registry: user and machine environment, Winlogon, SAM, or anything named like a secret
+  ['reg', String.raw`\breg(?:\.exe)?\s+(?:query|export|save)\b[^\n]{0,200}?(?:[\\/]environment\b|winlogon|[\\/](?:sam|security)\b|passw|secret|token|credential|api[_ -]?key|private)`],
+  ['hk', String.raw`\bhk(?:cu|lm|ey_current_user|ey_local_machine):?[\\/](?:[^\s"']{0,200}?[\\/])?environment\b`],
+] as [string, string][]).map(([needle, src]) => [needle, new RegExp(src, 'i')] as const)
+function windowsSecretRead(cmd: string): boolean {
+  const low = cmd.toLowerCase()
+  return WIN_READS.some(([needle, rx]) => low.includes(needle) && rx.test(cmd))
+}
+
+// A PowerShell invocation (powershell, pwsh, with or without .exe or a path) and what it was asked to run. The gate fails
+// closed: a payload that cannot be decoded, is too big, is too many, or is not UTF-16LE text, and a command line that
+// cannot be parsed, withhold the call; they are never skipped. The twin of _powershell_withholds in secret_sources.py.
+const PS_PROG = /(?<![\w-])(?:powershell|pwsh)(?:\.exe)?(?=\s|$)/gi
+const PS_ARG = /\s*("[^"]*"|'[^']*'|\S+)/y
+const PS_DASHES = '-/–—―' // PowerShell also takes an en dash, an em dash and a horizontal bar
+const PS_MAX_PAYLOAD_CHARS = 270_000 // base64 characters in one -EncodedCommand
+const PS_MAX_DECODED_BYTES = 200_000
+const PS_MAX_PAYLOADS = 8
+const PS_MAX_DEPTH = 3 // scripts inside scripts
+
+// 'enc' for -EncodedCommand, 'cmd' for -Command, else undefined. PowerShell accepts any unambiguous prefix (-e, -en, -enc,
+// ... and the alias -ec; -c, -co, -com, ...), a colon before the value (-enc:XYZ), `/` for `-` and any case.
+function psFlag(tok: string): 'enc' | 'cmd' | undefined {
+  if (tok.length < 2 || !PS_DASHES.includes(tok[0]!)) return undefined
+  const name = tok.slice(1).split(':')[0]!.toLowerCase()
+  if (!name) return undefined
+  if (name === 'ec' || 'encodedcommand'.startsWith(name)) return 'enc'
+  if ('command'.startsWith(name)) return 'cmd'
+  return undefined
+}
+
+function psArg(s: string, pos: number): { tok: string; end: number } | undefined {
+  PS_ARG.lastIndex = pos
+  const m = PS_ARG.exec(s)
+  return m ? { tok: m[1]!, end: PS_ARG.lastIndex } : undefined
+}
+
+// Strict base64 of UTF-16LE text, as the Python twin reads it: the alphabet only, padding at the end and correct, an even
+// number of bytes, no lone surrogate. Undefined when it is any less than that; the module has neither Buffer nor atob, so
+// the decoding is done by hand (the other direction of b64utf16le, further up).
+function decodeUtf16leBase64(b64: string): string | undefined | 'toolong' {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) return undefined
+  const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  let bits = 0, acc = 0
+  for (const ch of b64) {
+    if (ch === '=') break
+    acc = ((acc << 6) | T.indexOf(ch)) & 0xffffff; bits += 6
+    if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 0xff) }
+  }
+  if (bytes.length > PS_MAX_DECODED_BYTES) return 'toolong'
+  if (bytes.length % 2 !== 0) return undefined
+  const units: number[] = []
+  for (let i = 0; i < bytes.length; i += 2) units.push(bytes[i]! | (bytes[i + 1]! << 8))
+  let s = ''
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i]!
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const v = units[i + 1]
+      if (v === undefined || v < 0xdc00 || v > 0xdfff) return undefined
+      s += String.fromCharCode(u, v); i++
+    } else if (u >= 0xdc00 && u <= 0xdfff) return undefined
+    else s += String.fromCharCode(u)
+  }
+  return s
+}
+
+function powershellWithholds(name: unknown, cmd: string, depth: number): boolean {
+  const low = cmd.toLowerCase()
+  if (!low.includes('powershell') && !low.includes('pwsh')) return false
+  const starts = [...cmd.matchAll(PS_PROG)]
+  let payloads = 0
+  for (let i = 0; i < starts.length; i++) {
+    const prog = starts[i]!
+    const end = i + 1 < starts.length ? starts[i + 1]!.index! : cmd.length
+    const rest = cmd.slice(prog.index! + prog[0].length, end)
+    let pos = 0
+    for (;;) {
+      const a = psArg(rest, pos)
+      if (!a) break
+      const tok = a.tok
+      pos = a.end
+      if ((tok[0] === '"' || tok[0] === "'") && (tok.length < 2 || tok[tok.length - 1] !== tok[0])) return true // unterminated quote before the flag
+      const kind = psFlag(tok)
+      if (!kind) continue
+      const inline = tok.includes(':') ? tok.slice(tok.indexOf(':') + 1) : undefined
+      if (depth + 1 > PS_MAX_DEPTH) return true
+      if (kind === 'cmd') {
+        const inner = trimQuotes(inline !== undefined ? inline + rest.slice(pos) : rest.slice(pos))
+        if (!inner) return true
+        if (secretBearing(name, { command: inner }, depth + 1)) return true
+        break // everything after -Command is the command
+      }
+      // -EncodedCommand: the payload is the value after a colon, or the next argument
+      let payload: string
+      if (!inline) {
+        const nxt = psArg(rest, pos)
+        if (!nxt) return true
+        payload = nxt.tok
+        pos = nxt.end
+      } else payload = inline
+      payload = payload.replace(/^["'();&| ]+|["'();&| ]+$/g, '') // quotes and shell punctuation around it; base64 has none
+      payloads++
+      if (payloads > PS_MAX_PAYLOADS || !payload || payload.length > PS_MAX_PAYLOAD_CHARS) return true
+      const script = decodeUtf16leBase64(payload)
+      if (script === undefined || script === 'toolong') return true
+      if (secretBearing(name, { command: script }, depth + 1)) return true
+    }
+  }
+  return false
+}
 const SEGMENTS = /[;&|\n]+|\$\(|`/
 const TOKENS = /[\s'"`;&|()<>=]+/
 const ENV_BIN = /\/bin\/env$/
 const ENV_READ = /\b(?:os\.environ|os\.getenv|process\.env|ENV\[)/
 const PATH_KEYS = ['file_path', 'path', 'notebook_path']
 const SEARCH_KEYS = ['pattern', 'path', 'glob', 'include', 'query']
-const ASSIGN_VALUE = /^[A-Za-z_]\w*=/
+const ASSIGN_VALUE = /^(?:\$\{?env:)?[A-Za-z_]\w*\}?=/ // NAME=value, $env:NAME=value: never part of the summary
 const WITHHELD = '[withheld: secret-bearing source]'
 const INPUT_WITHHELD = '[input withheld: secret-bearing source]'
 const ROW_TEXT_MAX = 64_000
@@ -597,12 +768,12 @@ export function trimQuotes(s: string): string {
 function segmentSecret(segment: string, depth = 0): boolean {
   const seg = trimSegment(segment)
   if (!seg || depth > 5) return false
-  if (SECRET_PROGRAM.test(seg)) return true
+  if (SECRET_PROGRAM.test(seg) || WIN_PROGRAM.test(seg)) return true
   for (const rx of PEELERS) {
     const m = rx.exec(seg)
     if (m && segmentSecret(seg.slice(m[0].length), depth + 1)) return true
   }
-  const m = SHELL_C.exec(seg)
+  const m = SHELL_C.exec(seg) ?? WIN_SHELL_C.exec(seg)
   if (m) {
     const inner = trimQuotes(m[1]!)
     return inner.split(SEGMENTS).some(x => segmentSecret(x, depth + 1))
@@ -612,7 +783,7 @@ function segmentSecret(segment: string, depth = 0): boolean {
 
 // True when a tool call reads a secret-bearing file, prints the environment or a credential, or searches for a secret by
 // name. Best effort (see above).
-export function secretBearing(name: unknown, input: unknown): boolean {
+export function secretBearing(name: unknown, input: unknown, depth = 0): boolean {
   const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
   for (const k of PATH_KEYS) {
     const v = o[k]
@@ -626,7 +797,8 @@ export function secretBearing(name: unknown, input: unknown): boolean {
   }
   const cmd = typeof o.command === 'string' ? o.command : ''
   if (cmd) {
-    if (ENV_READ.test(cmd)) return true
+    if (ENV_READ.test(cmd) || windowsSecretRead(cmd)) return true
+    if (powershellWithholds(name, cmd, depth)) return true
     for (const seg of cmd.split(SEGMENTS)) {
       if (segmentSecret(seg)) return true
       const t = trimSegment(seg)
@@ -1100,7 +1272,7 @@ async function currentSid($: EngineInterface): Promise<string> {
 // The whole recall. Returns the text the assistant reads. Throws only on an engine failure; the tool hook catches that.
 async function recall($: EngineInterface, input: RecallInput): Promise<string> {
   const cfg = await cfgOf($)
-  const root = cfg.archiveRoot.replace(/\/+$/, '')
+  const root = trimRoot(cfg.archiveRoot)
   if (!cfg.mirrorEnabled) return 'recall: the mirror is switched off (mirror.enabled is false in chronicle.json), so there is no session record to search.'
   if (!root) return 'recall: no archive folder (archiveRoot starts with ~ and HOME is not set).'
   // Rows from the last few seconds are still in the buffer: write them first so they can be found.
@@ -2355,7 +2527,7 @@ async function assemblyFor($: EngineInterface, cfg: Cfg, msgs: readonly SessionM
     const off = assemblyAllowed(cfg.assembleWithMemories, trigger)
     if (off) return off
     if (!sessionId || sessionId === 'unknown') return 'no session id'
-    const ev = await memoryEvidence($, cfg.archiveRoot.replace(/\/+$/, ''), sessionId)
+    const ev = await memoryEvidence($, trimRoot(cfg.archiveRoot), sessionId)
     if (typeof ev === 'string') return ev
     return planAssembly(msgs, cut, ev.mems, ev.seq, {
       gapRawMax: posInt(cfg.gapRawMaxTokens, DEFAULT_GAP_RAW_MAX),

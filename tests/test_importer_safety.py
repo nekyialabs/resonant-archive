@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import psycopg
@@ -17,6 +18,7 @@ from resonant_archive.redact import Redactor
 from resonant_archive.secret_sources import INPUT_WITHHELD, WITHHELD, secret_bearing, secret_call_summary
 
 from . import synth
+from .symhelp import symlink_or_skip
 from .secret_cases import ORDINARY_CALLS, SECRET_CALLS
 
 BASE = {"sessionId": "s1", "entrypoint": "cli"}
@@ -96,6 +98,12 @@ HOSTILE = {   # shapes that made an earlier version of a rule quadratic; each mu
     "quotes": ("'" * 200_000 + "env"), "service account": "/" + "service-account-" * 15_000 + "!",
     "tfstate": "terraform.tfstate" * 15_000 + "!", "begin": "BEGIN " * 50_000, "env dots": ".env" * 60_000 + "!",
     "sudo flags": "sudo " + "-a " * 80_000, "assignments": "a=b " * 60_000 + "env", "proc": "/proc/x" * 40_000,
+    # Windows rules (2.0.2)
+    "get-process": "get-process x " * 40_000, "gps": "gps " * 120_000, "reg query": "reg query " * 50_000,
+    "cmd flags": "cmd " + "/a " * 80_000, "powershell flags": "powershell " + "-a " * 80_000,
+    "gci": "gci " * 120_000, "percent": "%A_KEY" * 70_000, "env colon": "$env:" * 90_000, "wmic": "wmic process " * 30_000,
+    "encoded": "powershell -enc " + "A" * 400_000, "many encoded": "powershell -enc " + "AAAAAAAAAAAAAAAAAAAA " * 20_000,
+    "netsh": "netsh wlan show profile " * 20_000, "hklm": "HKLM:\\" * 70_000, "cmd.exe": "cmd.exe " * 60_000,
 }
 
 
@@ -258,7 +266,7 @@ def test_symlinked_files_are_not_followed(dsn, tmp_path):
     notes = tmp_path / "notes"
     notes.mkdir()
     (notes / "real.md").write_text("an ordinary note " * 30)
-    os.symlink(outside, notes / "link.md")
+    symlink_or_skip(outside, notes / "link.md")
     rep = commands.import_path("markdown_folder", notes, dsn=dsn)
     assert rep.ok and rep.importer_stats["skipped symlink"] == 1
     assert not q(dsn, "SELECT 1 FROM messages WHERE text LIKE '%SECRET-IN-A-FILE%'")
@@ -270,7 +278,7 @@ def test_a_symlinked_project_folder_pointing_outside_is_skipped(dsn, tmp_path):
     synth.jl(real / "s1.jsonl", [user("u1", "OUTSIDE-ROOT-CONTENT hello there")])
     root = tmp_path / "projects"
     root.mkdir()
-    os.symlink(real, root / "proj")
+    symlink_or_skip(real, root / "proj", directory=True)
     rep = commands.import_path("claude_code", root, dsn=dsn) if importers.detect(root) else None
     found = list(importers.get("claude_code").units(root, Options()))
     assert found == []
@@ -281,15 +289,33 @@ def test_symlinked_jsonl_is_skipped_by_every_jsonl_importer(tmp_path):
     outside = synth.jl(tmp_path / "out" / "x.jsonl", [user("u1", "hello")])
     d = tmp_path / "cc" / "proj"
     d.mkdir(parents=True)
-    os.symlink(outside, d / "s1.jsonl")
+    symlink_or_skip(outside, d / "s1.jsonl")
     imp = importers.get("claude_code")
     assert list(imp.units(tmp_path / "cc", Options())) == [] and imp.skipped["symlink"] == 1
     assert importers.detect(tmp_path / "cc") == []
     day = tmp_path / "mirror" / "2026-04-01"
     day.mkdir(parents=True)
-    os.symlink(outside, day / "sid.jsonl")
+    symlink_or_skip(outside, day / "sid.jsonl")
     imp = importers.get("chronicle_mirror")
     assert list(imp.units(tmp_path / "mirror", Options())) == [] and imp.skipped["symlink"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are a Windows thing")
+def test_a_directory_junction_pointing_outside_is_not_read(tmp_path):
+    """A junction is not a symlink to Python (is_symlink() is False and os.walk descends into it, and `mklink /J` needs
+    no privilege), so only the resolve-inside-the-root check stands between an archive folder and a folder elsewhere."""
+    import _winapi
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("SECRET-IN-A-FOLDER-OUTSIDE " * 40)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "real.md").write_text("an ordinary note " * 30)
+    _winapi.CreateJunction(str(outside), str(notes / "linked"))
+    imp = importers.get("markdown_folder")
+    keys = [u.key for u in imp.units(notes, Options())]
+    assert keys == ["real.md"] and imp.skipped["outside root"] == 1
 
 
 def test_oversized_file_is_skipped_not_truncated(dsn, tmp_path, monkeypatch):
@@ -303,6 +329,7 @@ def test_oversized_file_is_skipped_not_truncated(dsn, tmp_path, monkeypatch):
     assert q(dsn, "SELECT count(DISTINCT conv_id) FROM messages")[0][0] == 1
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Windows has no FIFOs")
 def test_fifo_is_not_read(tmp_path):
     notes = tmp_path / "notes"
     notes.mkdir()
@@ -348,7 +375,7 @@ def test_pipeline_rechecks_a_unit_a_plugin_listed(dsn, tmp_path):
     target.write_text("x")
     link = tmp_path / "root" / "l.md"
     link.parent.mkdir()
-    os.symlink(target, link)
+    symlink_or_skip(target, link)
 
     class Sloppy(Importer):
         name, default_source = "sloppy", "sloppy"
@@ -361,3 +388,55 @@ def test_pipeline_rechecks_a_unit_a_plugin_listed(dsn, tmp_path):
 
     rep = pipeline.run_import(Sloppy(), link.parent, dsn=dsn)
     assert rep.units_skipped == 1 and rep.importer_stats["skipped symlink"] == 1 and rep.ok
+
+
+# ---------------------------------------------------------------- -EncodedCommand cannot be used to get past the gate
+
+def _enc(script: str) -> str:
+    import base64
+
+    return base64.b64encode(script.encode("utf-16-le")).decode()
+
+
+def test_an_encoded_payload_over_the_size_limit_is_withheld_not_skipped():
+    padded = _enc("Get-ChildItem Env:" + " " * 210_000)        # 420 KB of UTF-16, the listing hidden behind the padding
+    assert len(padded) > 270_000
+    assert secret_bearing("Bash", {"command": "powershell -enc " + padded})
+    just_under = _enc("Get-Date" + " " * 90_000)               # an ordinary big script is inspected, and is fine
+    assert not secret_bearing("Bash", {"command": "powershell -enc " + just_under})
+    decoded_over = _enc("x" * 100_001)                          # 200,002 bytes: over the decoded limit, under the text limit
+    assert secret_bearing("Bash", {"command": "powershell -enc " + decoded_over})
+
+
+def test_a_ninth_encoded_payload_is_withheld_not_skipped():
+    benign = _enc("Get-Date")
+    eight = "; ".join(f"powershell -enc {benign}" for _ in range(8))
+    assert not secret_bearing("Bash", {"command": eight})
+    assert secret_bearing("Bash", {"command": eight + "; powershell -enc " + _enc("Get-ChildItem Env:")})
+    assert secret_bearing("Bash", {"command": eight + "; powershell -enc " + benign})   # the count itself withholds
+
+
+@pytest.mark.parametrize("flag", ["-e", "-ec", "-en", "-enc", "-enco", "-EncodedCommand", "/enc", "-ENC", "-enc:", "-EncodedCommand:", "/e:"])
+def test_every_spelling_of_the_encoded_flag_is_inspected(flag):
+    secret, ordinary = _enc("Get-ChildItem Env:"), _enc("Get-Date")
+    glue = "" if flag.endswith(":") else " "
+    assert secret_bearing("Bash", {"command": f"powershell {flag}{glue}{secret}"})
+    assert not secret_bearing("Bash", {"command": f"powershell {flag}{glue}{ordinary}"})
+
+
+def test_a_nested_script_depth_limit_withholds():
+    script = "Get-Date"
+    for _ in range(6):
+        script = "powershell -enc " + _enc(script)
+    assert secret_bearing("Bash", {"command": script})
+
+
+@pytest.mark.parametrize("cmd", [
+    'powershell -ExecutionPolicy Bypass -Command "printenv"',
+    'pwsh -NoLogo -ExecutionPolicy Bypass -Command "compgen -v"',
+    'powershell -NoProfile -WindowStyle Hidden -com "env"',
+    "powershell /command printenv",
+    "powershell -Command:printenv",
+])
+def test_command_is_found_after_value_taking_flags(cmd):
+    assert secret_bearing("Bash", {"command": cmd})

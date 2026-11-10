@@ -37,6 +37,57 @@ SECRET_CALLS: list[tuple[str, dict]] = [
     ("Glob", {"pattern": "**/*.pem"}),
     ("Glob", {"pattern": "**/secrets.*"}),
     ("Glob", {"pattern": "**/*", "path": "/home/user/.ssh/id_rsa"}),
+    # --- Windows: file names with backslashes, and PowerShell / cmd commands (the tool is `PowerShell` or `Bash`) ---
+    *[("Read", {"file_path": p}) for p in (
+        "C:\\proj\\.env", "C:\\proj\\secrets.yml", "C:\\Users\\me\\.ssh\\id_rsa", "C:\\Users\\me\\.aws\\credentials",
+        "C:\\Users\\me\\.npmrc", "C:\\Users\\me\\.git-credentials", "C:\\Users\\me\\.docker\\config.json",
+        "C:\\Users\\me\\.kube\\config", "D:\\x\\private\\notes.md", "C:\\Users\\me\\NTUSER.DAT", "C:\\Windows\\System32\\config\\SAM",
+        "C:\\Users\\me\\.azure\\accessTokens.json", "C:\\Users\\me\\AppData\\Roaming\\GitHub CLI\\gh\\hosts.yml",
+        "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Credentials\\ABCDEF0123",
+        "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt")],
+    *[("PowerShell", {"command": c}) for c in (
+        "Get-ChildItem Env:", "gci env:", "GCI ENV: | Sort-Object Name", "dir env:", "ls Env:\\", "Get-Item -Path Env:*",
+        "Get-Content env:OPENAI_API_KEY", "Write-Host $env:GITHUB_TOKEN", "echo ${env:DB_PASSWORD}",
+        "[Environment]::GetEnvironmentVariable('PATH')", "[System.Environment]::GetEnvironmentVariables()",
+        "[Environment]::GetEnvironmentVariables('User') | Format-List",
+        "Get-CimInstance Win32_Process | Select-Object Name, CommandLine",
+        "Get-WmiObject -Class Win32_Process -Filter \"name='node.exe'\"",
+        "Get-CimInstance -ClassName win32_service | select Name, PathName, StartName",
+        "Get-Process | Select-Object Name, CommandLine", "gps node | select Id,CommandLine",
+        "Get-ItemProperty -Path 'HKCU:\\Environment'", "Get-StoredCredential -Target git", "Get-Secret -Name token -AsPlainText",
+        "$c.GetNetworkCredential().Password", "$s | ConvertFrom-SecureString", "Get-Content .\\.env.local",
+        "gc C:\\Users\\me\\.ssh\\id_ed25519", "cat $HOME\\.aws\\credentials", "Get-ChildItem -Recurse | Select-String password",
+        "sls -Path . -Pattern 'api_key' -Recurse", "powershell -NoProfile -Command \"gci env:\"")],
+    *[("Bash", {"command": c}) for c in (
+        "wmic process get commandline", "wmic process where name=\"node.exe\" get commandline,processid",
+        "C:\\Windows\\System32\\wbem\\WMIC.exe process list full", "wmic environment get name,variablevalue",
+        "cmdkey /list", "cmdkey.exe /list:git:https://github.com", "vaultcmd /listcreds:\"Windows Credentials\"",
+        "reg query HKCU\\Environment", "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\"",
+        "reg query HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", "reg query HKCU\\Software\\Acme /v ApiToken",
+        "reg.exe query HKCU\\Software /s /f password", "cmd /c set", "cmd.exe /c \"set\"", "cmd /c set API", "set AWS",
+        "echo %GITHUB_TOKEN%", "echo %API_KEY%", "powershell.exe -c \"Get-ChildItem Env:\"",
+        "pwsh -NoProfile -Command 'Get-CimInstance Win32_Process'",
+        "powershell -NoProfile -EncodedCommand RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -enc WwBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoARwBlAHQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQBzACgAKQA=",
+        "netsh wlan show profile name=\"Home\" key=clear", "type .env", "findstr /s /i password *.config",
+        "C:\\Windows\\System32\\findstr.exe /s token *.json")],
+    # PowerShell's own spellings: every unambiguous prefix of -EncodedCommand, colon forms, `/`, any case; -Command after
+    # value-taking flags; and what cannot be parsed or decoded (a payload that is not base64, not UTF-16LE text, missing)
+    *[("Bash", {"command": c}) for c in (
+        "powershell -e RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "powershell -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "powershell -enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -enco RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "powershell -encodedcomman RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -EncodedCommand RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "powershell -enc:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -EncodedCommand:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "powershell /enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell /e:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA", "POWERSHELL.EXE -ENC RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "pwsh -NoProfile -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -NoProfile -ExecutionPolicy Bypass -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA",
+        "powershell -enc \"RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA\"",
+        "powershell -ExecutionPolicy Bypass -Command \"printenv\"", "pwsh -NoLogo -ExecutionPolicy Bypass -Command \"compgen -v\"",
+        "powershell -ExecutionPolicy Bypass -c printenv", "powershell -NoProfile -WindowStyle Hidden -com env", "powershell /command env",
+        "powershell -Command:printenv", "powershell -NoLogo -InputFormat Text -OutputFormat Text -Command \"gci env:\"",
+        "powershell -enc !!!not-base64!!!", "powershell -enc QQ==", "powershell -enc", "powershell -EncodedCommand:",
+        "powershell \"unterminated -Command Get-Date", "powershell -Command")],
 ]
 
 ORDINARY_CALLS: list[tuple[str, object]] = [
@@ -53,4 +104,21 @@ ORDINARY_CALLS: list[tuple[str, object]] = [
     ("Grep", {"pattern": "def main", "glob": "*.py"}),
     ("Glob", {"pattern": "**/*.ts"}),
     ("Bash", {}), ("Read", None), ("Read", "string"),
+    # --- Windows ---
+    *[("Read", {"file_path": p}) for p in (
+        "C:\\Users\\me\\proj\\src\\environment.ts", "C:\\Users\\me\\.ssh\\id_rsa.pub", "C:\\Users\\me\\.docker\\daemon.json",
+        "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\x.lnk")],
+    *[("PowerShell", {"command": c}) for c in (
+        "Get-ChildItem -Recurse -Filter *.ts", "ls src", "dir C:\\work", "Get-Content README.md", "cd $env:USERPROFILE",
+        "Write-Host $env:PATH", "$env:NODE_ENV = 'test'; npm test", "Get-Process node",
+        "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 Name, CPU", "Get-CimInstance Win32_OperatingSystem",
+        "Get-CimInstance Win32_LogicalDisk", "Select-String -Path *.md -Pattern 'TODO'", "Get-ChildItem | Select-String foo",
+        "powershell -NoProfile -Command \"Get-Date\"", "powershell -EncodedCommand RwBlAHQALQBEAGEAdABlAA==")],
+    *[("Bash", {"command": c}) for c in (
+        "wmic os get caption", "tasklist", "set NODE_ENV=production", "cmd /c dir", "cmd.exe /c echo hi",
+        "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "reg add HKCU\\Software\\Acme /v Theme /d dark",
+        "cmdkey /add:host /user:u", "echo %PATH%", "echo %USERPROFILE%", "netsh wlan show interfaces", "findstr /s TODO *.ts",
+        "powershell -ExecutionPolicy Bypass -Command \"Get-Date\"", "powershell -NoLogo -c \"ls src\"", "pwsh -enc:RwBlAHQALQBEAGEAdABlAA==",
+        "powershell /c \"dir\"", "powershell -File build.ps1 -Verbose", "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1",
+        "powershell -en RwBlAHQALQBEAGEAdABlAA==", "powershell -NoProfile -EncodedCommand RwBlAHQALQBEAGEAdABlAA==")],
 ]

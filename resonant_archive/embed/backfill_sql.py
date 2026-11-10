@@ -189,6 +189,8 @@ def connect(dsn: str):
     """Open a psycopg 3 connection for the backfill (autocommit off)."""
     import psycopg
 
-    conn = psycopg.connect(dsn, autocommit=False)
+    from ..config import connect_kwargs
+
+    conn = psycopg.connect(dsn, autocommit=False, **connect_kwargs(dsn))
     conn.add_notice_handler(lambda d: log.info("postgres notice: %s", d.message_primary))
     return conn

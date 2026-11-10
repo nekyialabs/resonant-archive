@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { redact, secretBearing, blockText, trimQuotes, queuedPrompt } from '../hooks/register'
+import { redact, secretBearing, blockText, trimQuotes, queuedPrompt, b64utf16le } from '../hooks/register'
 
 // Every key below is obviously fake and built from repeated characters.
 const A20 = 'A'.repeat(20)
@@ -155,6 +155,37 @@ const SHAPES: [string, string, string][] = [
   ["jwt", "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.c2lnbmF0dXJlMTIzNDU2", "c2lnbmF0dXJl"],
   ["secret path", "https://x.example.test/mcp/abcdefghijklmnop1234", "abcdefghijklmnop1234"],
   ["secret query", "https://x.example.test/a?token=abc123def456", "abc123def456"],
+  ["win set", "set OPENAI_API_KEY=Zk9mQ2xLp7", "Zk9mQ2xLp7"],
+  ["win set short value", "set MYTOKEN=z9y8", "z9y8"],
+  ["win set bare name", "set PASSWORD=hunter2", "hunter2"],
+  ["win set quoted", "set \"DB_PASSWORD=hunter2\" && echo", "hunter2"],
+  ["win setx", "setx API_TOKEN \"val-ue-123\" /M", "val-ue-123"],
+  ["win setx bare", "setx GITHUB_TOKEN abcd1234", "abcd1234"],
+  ["powershell env assignment", "$env:GITHUB_TOKEN = \"ghx12\"", "ghx12"],
+  ["powershell env single quotes", "$env:DB_PASSWORD='p1q2'", "p1q2"],
+  ["powershell env braces", "${env:MY_SECRET} = 's3cr3t'", "s3cr3t"],
+  ["powershell SetEnvironmentVariable", "[Environment]::SetEnvironmentVariable(\"API_KEY\",\"v4lu3x\",\"User\")", "v4lu3x"],
+  ["powershell -Password", "Connect.ps1 -Password hunter2x -Verbose", "hunter2x"],
+  ["powershell -Token colon", "tool.exe -Token:abcd1234", "abcd1234"],
+  ["powershell -ApiKey quoted", "Invoke-X -ApiKey \"k3y v4lue\"", "v4lue"],
+  ["powershell -ClientSecret", "Get-Token -ClientSecret=abcd1234", "abcd1234"],
+  ["process command line", "\"C:\\Program Files\\App\\app.exe\" -Password:pw12345 -port 80", "pw12345"],
+  ["cmdkey /pass", "cmdkey /add:host /user:me /pass:S3cretPw", "S3cretPw"],
+  ["schtasks /RP", "schtasks /Create /RU me /RP Passw0rdX /TN t", "Passw0rdX"],
+  ["net use", "net use \\\\srv\\share Pa55w0rd /user:bob", "Pa55w0rd"],
+  ["net use with drive", "net use Z: \\\\srv\\share Pa55w0rd /user:bob", "Pa55w0rd"],
+  ["net user", "net user bob P4ssw0rd /add", "P4ssw0rd"],
+  ["sqlcmd -P", "sqlcmd -S srv -U sa -P S3cretPw -Q x", "S3cretPw"],
+  ["psexec -p", "psexec \\\\host -u a -p pw123abc cmd", "pw123abc"],
+  ["plink -pw", "plink -ssh me@host -pw secretpw1", "secretpw1"],
+  ["ConvertTo-SecureString", "ConvertTo-SecureString \"plainpw1\" -AsPlainText -Force", "plainpw1"],
+  ["gci env table", "x\nOPENAI_API_KEY                 abc123def\ny", "abc123def"],
+  ["gci env table bare name", "x\nTOKEN      t0k3nv\ny", "t0k3nv"],
+  ["gci env list", "x\nName  : MY_SECRET\nValue : abc123\ny", "abc123"],
+  ["wmic environment", "x\nName=API_KEY\r\nVariableValue=zz99\ny", "zz99"],
+  ["reg query value", "x\n    OPENAI_API_KEY    REG_SZ    rv4lu3\ny", "rv4lu3"],
+  ["reg query binary", "x\n    Password    REG_BINARY    4a4b4c\ny", "4a4b4c"],
+  ["reg add", "reg add HKCU\\Software\\X /v ApiToken /t REG_SZ /d tok3nvalue /f", "tok3nvalue"],
 ]
 const SURVIVORS: string[] = [
   "Just a normal sentence about the token economy and how a password reset email works.",
@@ -188,6 +219,23 @@ const SURVIVORS: string[] = [
   "a private key is a file you keep safe",
   "Authorization header is required",
   "version v2.0.0, release 2026-10-16, snowflake 1234567890123456789",
+  "set NODE_ENV=production && npm test",
+  "setx PATH \"C:\\tools;%PATH%\" /M",
+  "$env:PATH = \"C:\\x;\" + $env:PATH",
+  "$env:NODE_ENV = 'test'",
+  "msbuild app.sln /p:Configuration=Release /p:Platform=x64",
+  "Connect.ps1 -Password $pw -Verbose",
+  "Connect.ps1 -Password (Read-Host -AsSecureString) -Verbose",
+  "Get-Thing -Passphrase -Force",
+  "net user bob /domain",
+  "net use X: \\\\srv\\share *",
+  "sqlcmd -S srv -Q \"select 1\"",
+  "x\nPATH                           C:\\Windows\\System32\ny",
+  "x\nName  : PATH\nValue : C:\\bin\ny",
+  "x\n    Path    REG_EXPAND_SZ    C:\\bin\ny",
+  "reg add HKCU\\Software\\Acme /v Theme /d dark",
+  "cmdkey /add:host /user:me",
+  "Set-Location C:\\Users\\someone\\key-notes\\passwords-guide",
 ]
 // COVERAGE-END
 
@@ -210,6 +258,12 @@ const SLOW_INPUTS: Record<string, string> = {
   'unfinished cli-credentials': '-u ' + 'a'.repeat(40),
   'blank env lines': ' \t\n',
   'repeated unfinished env key': 'export A_KEY=\n',
+  // Windows rules: a prefix the rule can start on, over and over, and never finish
+  'repeated set': 'set A_KEY=', 'repeated setx': 'setx A_KEY "', 'repeated $env': '$env:A_KEY =', 'repeated -Password': '-Password ',
+  'repeated net use': 'net use ', 'repeated net user': 'net user a ', 'repeated sqlcmd': 'sqlcmd -x ', 'repeated psexec': 'psexec -x ',
+  'repeated ConvertTo': 'ConvertTo-SecureString "', 'repeated env table': 'A_KEY  \n', 'repeated env list': 'Name : A_KEY\n',
+  'repeated reg row': '    A_KEY  REG_SZ \n', 'repeated reg add': 'reg add /v a_key ', 'long upper run': 'A'.repeat(1000) + '  ',
+  'spaces': ' ',
 }
 for (const [name, frag] of Object.entries(SLOW_INPUTS)) {
   test(`redact: 500 KB of ${name} is scanned in under a second`, () => {
@@ -345,6 +399,103 @@ const SECRET_CALLS: [string, unknown][] = [
   ["Glob", {"pattern": "**/*.pem"}],
   ["Glob", {"pattern": "**/secrets.*"}],
   ["Glob", {"pattern": "**/*", "path": "/home/user/.ssh/id_rsa"}],
+  ["Read", {"file_path": "C:\\proj\\.env"}],
+  ["Read", {"file_path": "C:\\proj\\secrets.yml"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.ssh\\id_rsa"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.aws\\credentials"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.npmrc"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.git-credentials"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.docker\\config.json"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.kube\\config"}],
+  ["Read", {"file_path": "D:\\x\\private\\notes.md"}],
+  ["Read", {"file_path": "C:\\Users\\me\\NTUSER.DAT"}],
+  ["Read", {"file_path": "C:\\Windows\\System32\\config\\SAM"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.azure\\accessTokens.json"}],
+  ["Read", {"file_path": "C:\\Users\\me\\AppData\\Roaming\\GitHub CLI\\gh\\hosts.yml"}],
+  ["Read", {"file_path": "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Credentials\\ABCDEF0123"}],
+  ["Read", {"file_path": "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt"}],
+  ["PowerShell", {"command": "Get-ChildItem Env:"}],
+  ["PowerShell", {"command": "gci env:"}],
+  ["PowerShell", {"command": "GCI ENV: | Sort-Object Name"}],
+  ["PowerShell", {"command": "dir env:"}],
+  ["PowerShell", {"command": "ls Env:\\"}],
+  ["PowerShell", {"command": "Get-Item -Path Env:*"}],
+  ["PowerShell", {"command": "Get-Content env:OPENAI_API_KEY"}],
+  ["PowerShell", {"command": "Write-Host $env:GITHUB_TOKEN"}],
+  ["PowerShell", {"command": "echo ${env:DB_PASSWORD}"}],
+  ["PowerShell", {"command": "[Environment]::GetEnvironmentVariable('PATH')"}],
+  ["PowerShell", {"command": "[System.Environment]::GetEnvironmentVariables()"}],
+  ["PowerShell", {"command": "[Environment]::GetEnvironmentVariables('User') | Format-List"}],
+  ["PowerShell", {"command": "Get-CimInstance Win32_Process | Select-Object Name, CommandLine"}],
+  ["PowerShell", {"command": "Get-WmiObject -Class Win32_Process -Filter \"name='node.exe'\""}],
+  ["PowerShell", {"command": "Get-CimInstance -ClassName win32_service | select Name, PathName, StartName"}],
+  ["PowerShell", {"command": "Get-Process | Select-Object Name, CommandLine"}],
+  ["PowerShell", {"command": "gps node | select Id,CommandLine"}],
+  ["PowerShell", {"command": "Get-ItemProperty -Path 'HKCU:\\Environment'"}],
+  ["PowerShell", {"command": "Get-StoredCredential -Target git"}],
+  ["PowerShell", {"command": "Get-Secret -Name token -AsPlainText"}],
+  ["PowerShell", {"command": "$c.GetNetworkCredential().Password"}],
+  ["PowerShell", {"command": "$s | ConvertFrom-SecureString"}],
+  ["PowerShell", {"command": "Get-Content .\\.env.local"}],
+  ["PowerShell", {"command": "gc C:\\Users\\me\\.ssh\\id_ed25519"}],
+  ["PowerShell", {"command": "cat $HOME\\.aws\\credentials"}],
+  ["PowerShell", {"command": "Get-ChildItem -Recurse | Select-String password"}],
+  ["PowerShell", {"command": "sls -Path . -Pattern 'api_key' -Recurse"}],
+  ["PowerShell", {"command": "powershell -NoProfile -Command \"gci env:\""}],
+  ["Bash", {"command": "wmic process get commandline"}],
+  ["Bash", {"command": "wmic process where name=\"node.exe\" get commandline,processid"}],
+  ["Bash", {"command": "C:\\Windows\\System32\\wbem\\WMIC.exe process list full"}],
+  ["Bash", {"command": "wmic environment get name,variablevalue"}],
+  ["Bash", {"command": "cmdkey /list"}],
+  ["Bash", {"command": "cmdkey.exe /list:git:https://github.com"}],
+  ["Bash", {"command": "vaultcmd /listcreds:\"Windows Credentials\""}],
+  ["Bash", {"command": "reg query HKCU\\Environment"}],
+  ["Bash", {"command": "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\""}],
+  ["Bash", {"command": "reg query HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"}],
+  ["Bash", {"command": "reg query HKCU\\Software\\Acme /v ApiToken"}],
+  ["Bash", {"command": "reg.exe query HKCU\\Software /s /f password"}],
+  ["Bash", {"command": "cmd /c set"}],
+  ["Bash", {"command": "cmd.exe /c \"set\""}],
+  ["Bash", {"command": "cmd /c set API"}],
+  ["Bash", {"command": "set AWS"}],
+  ["Bash", {"command": "echo %GITHUB_TOKEN%"}],
+  ["Bash", {"command": "echo %API_KEY%"}],
+  ["Bash", {"command": "powershell.exe -c \"Get-ChildItem Env:\""}],
+  ["Bash", {"command": "pwsh -NoProfile -Command 'Get-CimInstance Win32_Process'"}],
+  ["Bash", {"command": "powershell -NoProfile -EncodedCommand RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc WwBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoARwBlAHQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQBzACgAKQA="}],
+  ["Bash", {"command": "netsh wlan show profile name=\"Home\" key=clear"}],
+  ["Bash", {"command": "type .env"}],
+  ["Bash", {"command": "findstr /s /i password *.config"}],
+  ["Bash", {"command": "C:\\Windows\\System32\\findstr.exe /s token *.json"}],
+  ["Bash", {"command": "powershell -e RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enco RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -encodedcomman RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -EncodedCommand RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -EncodedCommand:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell /enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell /e:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "POWERSHELL.EXE -ENC RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "pwsh -NoProfile -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -NoProfile -ExecutionPolicy Bypass -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc \"RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA\""}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -Command \"printenv\""}],
+  ["Bash", {"command": "pwsh -NoLogo -ExecutionPolicy Bypass -Command \"compgen -v\""}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -c printenv"}],
+  ["Bash", {"command": "powershell -NoProfile -WindowStyle Hidden -com env"}],
+  ["Bash", {"command": "powershell /command env"}],
+  ["Bash", {"command": "powershell -Command:printenv"}],
+  ["Bash", {"command": "powershell -NoLogo -InputFormat Text -OutputFormat Text -Command \"gci env:\""}],
+  ["Bash", {"command": "powershell -enc !!!not-base64!!!"}],
+  ["Bash", {"command": "powershell -enc QQ=="}],
+  ["Bash", {"command": "powershell -enc"}],
+  ["Bash", {"command": "powershell -EncodedCommand:"}],
+  ["Bash", {"command": "powershell \"unterminated -Command Get-Date"}],
+  ["Bash", {"command": "powershell -Command"}],
 ]
 const ORDINARY_CALLS: [string, unknown][] = [
   ["Read", {"file_path": "/app/src/environment.ts"}],
@@ -381,6 +532,45 @@ const ORDINARY_CALLS: [string, unknown][] = [
   ["Bash", {}],
   ["Read", null],
   ["Read", "string"],
+  ["Read", {"file_path": "C:\\Users\\me\\proj\\src\\environment.ts"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.ssh\\id_rsa.pub"}],
+  ["Read", {"file_path": "C:\\Users\\me\\.docker\\daemon.json"}],
+  ["Read", {"file_path": "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\x.lnk"}],
+  ["PowerShell", {"command": "Get-ChildItem -Recurse -Filter *.ts"}],
+  ["PowerShell", {"command": "ls src"}],
+  ["PowerShell", {"command": "dir C:\\work"}],
+  ["PowerShell", {"command": "Get-Content README.md"}],
+  ["PowerShell", {"command": "cd $env:USERPROFILE"}],
+  ["PowerShell", {"command": "Write-Host $env:PATH"}],
+  ["PowerShell", {"command": "$env:NODE_ENV = 'test'; npm test"}],
+  ["PowerShell", {"command": "Get-Process node"}],
+  ["PowerShell", {"command": "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 Name, CPU"}],
+  ["PowerShell", {"command": "Get-CimInstance Win32_OperatingSystem"}],
+  ["PowerShell", {"command": "Get-CimInstance Win32_LogicalDisk"}],
+  ["PowerShell", {"command": "Select-String -Path *.md -Pattern 'TODO'"}],
+  ["PowerShell", {"command": "Get-ChildItem | Select-String foo"}],
+  ["PowerShell", {"command": "powershell -NoProfile -Command \"Get-Date\""}],
+  ["PowerShell", {"command": "powershell -EncodedCommand RwBlAHQALQBEAGEAdABlAA=="}],
+  ["Bash", {"command": "wmic os get caption"}],
+  ["Bash", {"command": "tasklist"}],
+  ["Bash", {"command": "set NODE_ENV=production"}],
+  ["Bash", {"command": "cmd /c dir"}],
+  ["Bash", {"command": "cmd.exe /c echo hi"}],
+  ["Bash", {"command": "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"}],
+  ["Bash", {"command": "reg add HKCU\\Software\\Acme /v Theme /d dark"}],
+  ["Bash", {"command": "cmdkey /add:host /user:u"}],
+  ["Bash", {"command": "echo %PATH%"}],
+  ["Bash", {"command": "echo %USERPROFILE%"}],
+  ["Bash", {"command": "netsh wlan show interfaces"}],
+  ["Bash", {"command": "findstr /s TODO *.ts"}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -Command \"Get-Date\""}],
+  ["Bash", {"command": "powershell -NoLogo -c \"ls src\""}],
+  ["Bash", {"command": "pwsh -enc:RwBlAHQALQBEAGEAdABlAA=="}],
+  ["Bash", {"command": "powershell /c \"dir\""}],
+  ["Bash", {"command": "powershell -File build.ps1 -Verbose"}],
+  ["Bash", {"command": "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1"}],
+  ["Bash", {"command": "powershell -en RwBlAHQALQBEAGEAdABlAA=="}],
+  ["Bash", {"command": "powershell -NoProfile -EncodedCommand RwBlAHQALQBEAGEAdABlAA=="}],
 ]
 // SECRET-CASES-END
 
@@ -431,6 +621,12 @@ const HOSTILE: Record<string, string> = {
   quotes: "'".repeat(200_000) + 'env', 'service account': '/' + 'service-account-'.repeat(15_000) + '!',
   tfstate: 'terraform.tfstate'.repeat(15_000) + '!', begin: 'BEGIN '.repeat(50_000), 'env dots': '.env'.repeat(60_000) + '!',
   'sudo flags': 'sudo ' + '-a '.repeat(80_000), assignments: 'a=b '.repeat(60_000) + 'env', proc: '/proc/x'.repeat(40_000),
+  // Windows rules
+  'get-process': 'get-process x '.repeat(40_000), gps: 'gps '.repeat(120_000), 'reg query': 'reg query '.repeat(50_000),
+  'cmd flags': 'cmd ' + '/a '.repeat(80_000), 'powershell flags': 'powershell ' + '-a '.repeat(80_000), gci: 'gci '.repeat(120_000),
+  percent: '%A_KEY'.repeat(70_000), 'env colon': '$env:'.repeat(90_000), wmic: 'wmic process '.repeat(30_000),
+  encoded: 'powershell -enc ' + 'A'.repeat(400_000), 'many encoded': 'powershell -enc ' + 'AAAAAAAAAAAAAAAAAAAA '.repeat(20_000),
+  netsh: 'netsh wlan show profile '.repeat(20_000), hklm: 'HKLM:\\'.repeat(70_000), 'cmd.exe': 'cmd.exe '.repeat(60_000),
 }
 for (const [name, v] of Object.entries(HOSTILE)) {
   test(`secretBearing is linear on hostile input: ${name}`, () => {
@@ -509,3 +705,48 @@ test('queuedPrompt gives what the old function gave', () => {
   cases.push('', '<system-reminder>', '</system-reminder>', `${HEAD}\n`, `${HEAD}\n${NOTE}`, `${HEAD}\n\n${NOTE}`)
   for (const c of cases) expect(queuedPrompt(c)).toEqual(oldQueuedPrompt(c))
 })
+
+// ---- -EncodedCommand cannot be used to get past the gate (the same cases as tests/test_importer_safety.py) ----
+const enc = (s: string): string => b64utf16le(s)
+
+test('an encoded payload over the size limit is withheld, not skipped', () => {
+  const padded = enc('Get-ChildItem Env:' + ' '.repeat(210_000))
+  expect(padded.length).toBeGreaterThan(270_000)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + padded })).toBe(true)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + enc('Get-Date' + ' '.repeat(90_000)) })).toBe(false)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + enc('x'.repeat(100_001)) })).toBe(true) // 200,002 bytes
+})
+
+test('a ninth encoded payload is withheld, not skipped', () => {
+  const benign = enc('Get-Date')
+  const eight = Array.from({ length: 8 }, () => `powershell -enc ${benign}`).join('; ')
+  expect(secretBearing('Bash', { command: eight })).toBe(false)
+  expect(secretBearing('Bash', { command: eight + '; powershell -enc ' + enc('Get-ChildItem Env:') })).toBe(true)
+  expect(secretBearing('Bash', { command: eight + '; powershell -enc ' + benign })).toBe(true)
+})
+
+for (const flag of ['-e', '-ec', '-en', '-enc', '-enco', '-EncodedCommand', '/enc', '-ENC', '-enc:', '-EncodedCommand:', '/e:']) {
+  test(`the encoded flag ${flag} is inspected`, () => {
+    const glue = flag.endsWith(':') ? '' : ' '
+    expect(secretBearing('Bash', { command: `powershell ${flag}${glue}${enc('Get-ChildItem Env:')}` })).toBe(true)
+    expect(secretBearing('Bash', { command: `powershell ${flag}${glue}${enc('Get-Date')}` })).toBe(false)
+  })
+}
+
+test('scripts inside scripts past the depth limit are withheld', () => {
+  let script = 'Get-Date'
+  for (let i = 0; i < 6; i++) script = 'powershell -enc ' + enc(script)
+  expect(secretBearing('Bash', { command: script })).toBe(true)
+})
+
+for (const cmd of [
+  'powershell -ExecutionPolicy Bypass -Command "printenv"',
+  'pwsh -NoLogo -ExecutionPolicy Bypass -Command "compgen -v"',
+  'powershell -NoProfile -WindowStyle Hidden -com "env"',
+  'powershell /command printenv',
+  'powershell -Command:printenv',
+]) {
+  test(`-Command is found after value-taking flags: ${cmd}`, () => {
+    expect(secretBearing('Bash', { command: cmd })).toBe(true)
+  })
+}

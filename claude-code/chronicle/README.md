@@ -135,6 +135,7 @@ Tested against Claude Code 2.1.301.
 - Redaction is pattern-based. Over-redaction is accepted (a few characters of record are lost); a leaked key can only be rotated. It is not a substitute for keeping the mirror private.
 - Memory formation (off by default) spends model calls in the background.
 - `/squish` starts `/compact` just after answering, because Claude Code refuses to run a command from inside a command hook.
+- On Windows the home folder is `USERPROFILE` (`HOME`, which Git Bash sets to an MSYS path such as `/c/Users/you`, is only the fallback), and `archiveRoot` may be written `~\dir` or with a trailing backslash. The tests run on Windows in CI, with the rest of the repository's checks.
 - On Linux and macOS, session recall and assembly shell out to `rg`, `sh`, `mkdir` and `cat`. On Windows (the environment has `OS=Windows_NT`, or the home folder starts with a drive letter) the mirror is appended by a PowerShell script passed as `-EncodedCommand` (a byte copy of stdin, so no shell quoting is involved), and listing, searching and reading go through `$.fs`. Two Windows limits: a single mirror file over the engine's 4 MiB read limit is not searched or read whole, and `recall` says so; and the 0700/0600 permission bits do not apply, the mirror sits under the user's own profile folder.
 - The memory block's heading used to carry a fixed city name in brackets; blocks written that way are still accepted.
 

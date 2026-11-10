@@ -1,0 +1,17 @@
+# Text is stored with LF and checked out with LF on every platform, including Windows with core.autocrlf=true.
+# Without this a Windows checkout turns scripts into CRLF: `bash scripts/lint.sh` then fails on "\r", and a
+# docker-compose.yml or .sql written into a Linux container carries the carriage returns with it.
+* text=auto eol=lf
+
+# Files meant for cmd.exe keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binary files.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.whl binary
+*.onnx binary

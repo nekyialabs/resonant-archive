@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 
+from .. import fsutil
 from .paths import model_dir as _default_model_dir
 
 REPO = "nomic-ai/nomic-embed-text-v1.5"
@@ -143,7 +144,7 @@ def verify_cached(
         tmp = marker.with_name(marker.name + ".tmp")
         tmp.write_text(json.dumps({"revision": PINNED_REVISION, "files": {
             n: {"sha256": spec.sha256, **_stamp(d / n)} for n, spec in manifest.items()}}), encoding="utf-8")
-        os.replace(tmp, marker)
+        fsutil.replace(tmp, marker)
     except OSError:
         pass
     return sums
@@ -221,7 +222,7 @@ def fetch_model(
         part.unlink(missing_ok=True)
         url = f"{base_url.rstrip('/')}/{repo}/resolve/{revision}/{spec.remote}"
         _download(url, part, spec, progress)
-        os.replace(part, final)  # only a verified file takes its final name
+        fsutil.replace(part, final)  # only a verified file takes its final name
     verify_model_dir(d, manifest)  # belt and braces: re-read what is on disk
     write_sha256sums(d, manifest)
     return d

@@ -16,12 +16,15 @@ DEFAULT_PORT = 8899
 
 
 def data_dir() -> Path:
-    """XDG data dir for resonant-archive (``~/.local/share/resonant-archive`` on Linux)."""
+    """Data dir for resonant-archive: ``~/.local/share/resonant-archive`` on Linux, ``%LOCALAPPDATA%/resonant-archive``
+    on Windows."""
     override = os.environ.get("RESONANT_ARCHIVE_DATA_DIR")
     if override:
         return Path(override).expanduser()
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        from ..config import data_dir as _windows_data_dir   # one answer for the CLI and the embedder
+
+        return _windows_data_dir()
     elif sys.platform == "darwin":
         base = str(Path.home() / "Library" / "Application Support")
     else:

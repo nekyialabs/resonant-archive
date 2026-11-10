@@ -8,6 +8,8 @@ from typer.testing import CliRunner
 
 from resonant_archive import cli, commands, config, db, runtime
 
+from .permcheck import is_private
+
 runner = CliRunner()
 INSERT = "INSERT INTO messages (id, source, conv_id, ts, speaker, text, seq) VALUES ('a', 's', 'c', now(), 'user', 'x', 0)"
 
@@ -103,7 +105,7 @@ def test_cli_init_with_dsn_saves_both_and_no_save_makes_no_role(blank_dsn, tmp_p
     assert cfg["dsn"] == blank_dsn and cfg["readonly_dsn"] != blank_dsn
     assert "read-only role archive_reader" in res.output
     assert cfg["readonly_dsn"] not in res.output                    # the address (and its password) is never printed
-    assert oct(config.config_file().stat().st_mode & 0o777) == "0o600"
+    assert is_private(config.config_file())
 
 
 def test_doctor_warns_when_readonly_dsn_is_unset_or_the_owner(dsn, monkeypatch):

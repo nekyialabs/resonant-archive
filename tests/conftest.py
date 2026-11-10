@@ -16,6 +16,7 @@ import itertools
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -23,17 +24,23 @@ import psycopg
 import pytest
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
+from resonant_archive.fsutil import NO_WINDOW
+
 ENV_TEST_DSN = "RESONANT_ARCHIVE_TEST_DSN"
 
 
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
     """No test may read or write the real user config or point at a real database."""
-    for var in ("RESONANT_ARCHIVE_DSN", "RESONANT_ARCHIVE_READONLY_DSN", "RESONANT_ARCHIVE_CONFIG"):
+    for var in ("RESONANT_ARCHIVE_DSN", "RESONANT_ARCHIVE_READONLY_DSN", "RESONANT_ARCHIVE_CONFIG",
+                "RESONANT_ARCHIVE_DATA_DIR", "RESONANT_EMBEDDER_MODEL_DIR", "PGCONNECT_TIMEOUT"):
         monkeypatch.delenv(var, raising=False)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))            # Path.home() on Windows reads this, not HOME
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(home / "state"))
@@ -65,16 +72,30 @@ def pg_admin_dsn():
     sock = base / "sock"
     sock.mkdir()
     port = 55000 + os.getpid() % 5000
-    subprocess.run([str(binroot / "initdb"), "-D", str(data), "-A", "trust", "-E", "UTF8", "--no-sync", "-U", "postgres"],
-                   check=True, capture_output=True)
-    opts = f"-c listen_addresses='' -c unix_socket_directories={sock} -p {port} -c fsync=off -c max_connections=60"
-    started = subprocess.run([str(binroot / "pg_ctl"), "-D", str(data), "-w", "-l", str(base / "log"), "-o", opts, "start"],
-                             capture_output=True, text=True)
+    win = sys.platform == "win32"
+    nowin = {"creationflags": NO_WINDOW}                    # no console window on Windows (0 elsewhere)
+    try:
+        subprocess.run([str(binroot / "initdb"), "-D", str(data), "-A", "trust", "-E", "UTF8", "--no-sync", "-U", "postgres"],
+                       check=True, capture_output=True, **nowin)
+    except (subprocess.CalledProcessError, OSError) as exc:   # e.g. a Windows runner's PostgreSQL that cannot run as this user
+        shutil.rmtree(base, ignore_errors=True)
+        pytest.skip(f"initdb failed, so no throwaway Postgres: {exc}")
+    if win:   # loopback TCP: no unix sockets here. Never run by the author: it needs initdb on PATH and pgvector installed
+        opts = f"-c listen_addresses=127.0.0.1 -p {port} -c fsync=off -c max_connections=60"
+        # pg_ctl's own output must not be a pipe: the server it starts inherits the handle and capture_output would
+        # wait for the server to exit. The log file (-l) has what it printed.
+        started = subprocess.run([str(binroot / "pg_ctl"), "-D", str(data), "-w", "-l", str(base / "log"), "-o", opts, "start"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **nowin)
+        started.stderr = ""
+    else:
+        opts = f"-c listen_addresses='' -c unix_socket_directories={sock} -p {port} -c fsync=off -c max_connections=60"
+        started = subprocess.run([str(binroot / "pg_ctl"), "-D", str(data), "-w", "-l", str(base / "log"), "-o", opts, "start"],
+                                 capture_output=True, text=True)
     if started.returncode != 0:
         log = (base / "log").read_text() if (base / "log").exists() else ""
         shutil.rmtree(base, ignore_errors=True)
         pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()[:300]} {log[-300:]}")
-    dsn = f"host={sock} port={port} user=postgres dbname=postgres"
+    dsn = f"host={'127.0.0.1' if win else sock} port={port} user=postgres dbname=postgres"
     try:
         with psycopg.connect(dsn, autocommit=True) as c:
             avail = {r[0] for r in c.execute("SELECT name FROM pg_available_extensions").fetchall()}
@@ -82,7 +103,7 @@ def pg_admin_dsn():
             pytest.skip(f"the local Postgres lacks pgvector/pg_trgm (has {sorted(avail & {'vector', 'pg_trgm'})})")
         yield dsn
     finally:
-        subprocess.run([str(binroot / "pg_ctl"), "-D", str(data), "-m", "immediate", "stop"], capture_output=True)
+        subprocess.run([str(binroot / "pg_ctl"), "-D", str(data), "-m", "immediate", "stop"], capture_output=True, **nowin)
         shutil.rmtree(base, ignore_errors=True)
 
 

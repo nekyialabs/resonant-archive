@@ -57,7 +57,8 @@ def connect(
     if statement_timeout_ms:
         opts.append(f"-c statement_timeout={int(statement_timeout_ms)}")
     try:
-        return psycopg.connect(target, autocommit=autocommit, options=" ".join(opts) or None)
+        return psycopg.connect(target, autocommit=autocommit, options=" ".join(opts) or None,
+                               **config.connect_kwargs(target))
     except psycopg.Error as exc:
         raise DatabaseError(f"cannot connect to {config.redact_dsn(target)}: {_why(exc)}") from exc
 

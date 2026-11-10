@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import sys
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 UTC = dt.timezone.utc
@@ -41,11 +43,30 @@ def zone(name: str | None) -> dt.tzinfo | None:
         raise ValueError(f"unknown timezone {name!r}") from exc
 
 
+def _windows_local_fallback(naive: dt.datetime) -> dt.datetime:
+    """Windows' C runtime cannot convert a local time before 1970 (OSError, Errno 22). Use the zone named by
+    RESONANT_ARCHIVE_TZ or TZ when one is set and valid (zoneinfo knows the historical offsets); only without one, the
+    offset in force today, which can be an hour or more off for an old date in a zone with daylight saving."""
+    for var in ("RESONANT_ARCHIVE_TZ", "TZ"):
+        name = os.environ.get(var, "").strip().lstrip(":")
+        if name:
+            try:
+                return naive.replace(tzinfo=ZoneInfo(name))
+            except (ZoneInfoNotFoundError, ValueError, OSError):
+                continue
+    return naive.replace(tzinfo=dt.timezone(dt.datetime.now().astimezone().utcoffset()))
+
+
 def wall_to_utc(naive: dt.datetime, tz: dt.tzinfo | None) -> dt.datetime:
     """Wall-clock time in ``tz`` (None = this machine's zone, with its daylight-saving rules) -> UTC.
 
     On the ambiguous autumn hour the first occurrence is taken (fold=0).
     """
     if tz is None:
-        return as_utc(naive.astimezone())  # a naive datetime is interpreted as local time
+        if sys.platform != "win32":
+            return as_utc(naive.astimezone())  # a naive datetime is interpreted as local time (raises where libc cannot)
+        try:
+            return as_utc(naive.astimezone())
+        except (OSError, OverflowError, ValueError):
+            return as_utc(_windows_local_fallback(naive))
     return as_utc(naive.replace(tzinfo=tz))

@@ -89,7 +89,7 @@ and the options; an unchanged unit is skipped on the next import.
 ## Where the database address comes from
 
 In order: an explicit argument, `RESONANT_ARCHIVE_DSN` (`RESONANT_ARCHIVE_READONLY_DSN` for the read-only role), then
-`~/.config/resonant-archive/config.toml` (`$XDG_CONFIG_HOME` is honoured), written with mode 0600:
+`~/.config/resonant-archive/config.toml` (`$XDG_CONFIG_HOME` is honoured; on Windows `%LOCALAPPDATA%/resonant-archive/config/config.toml`), written with mode 0600 (an owner-only ACL on Windows):
 
 ```toml
 [database]
