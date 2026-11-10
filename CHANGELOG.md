@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-10
+
+Resonant-archive runs on Windows: the Python package and the chronicle mod, checked on Windows 11 and in CI on every pull request. Redaction learns Windows and PowerShell shapes. Linux and macOS behave as before.
+
 ### Added
 
 - **The chronicle mod runs on Windows.** The five places that shelled out to `sh`, `cat` and ripgrep now have a Windows path: the mirror is appended through `powershell.exe -EncodedCommand` (a byte copy of stdin, no shell quoting), the zone marker is written with `$.fs`, and the archive is listed, searched and read through `$.fs` (fixed strings, case-insensitive, the same semantics as the ripgrep call; capped at 4 MiB like rg's stdout was). Linux and macOS are unchanged. The ripgrep probe is skipped on Windows. The test harness treats a POSIX path and its Windows spelling as one file, takes an `env` option, and `tests/windows.test.ts` covers the append, the zone marker and recall on a Windows host.
@@ -134,7 +138,8 @@ Initial public release. Modernized from an earlier internal tool (`vault-archive
 
 [Apache License 2.0](LICENSE). Earlier releases (0.1.x) were under the Codependent AI Source-Available License; 2.0.0 and later are Apache-2.0.
 
-[Unreleased]: https://github.com/nekyialabs/resonant-archive/compare/v2.0.0...HEAD
-[2.0.1]: https://github.com/nekyialabs/resonant-archive/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/nekyialabs/resonant-archive/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/nekyialabs/resonant-archive/compare/v2.0.1...v2.1.0
+[2.0.1]: https://github.com/nekyialabs/resonant-archive/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/nekyialabs/resonant-archive/compare/v0.1.0...v2.0.0
 [0.1.0]: https://github.com/nekyialabs/resonant-archive/releases/tag/v0.1.0

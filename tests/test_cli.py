@@ -125,7 +125,7 @@ def test_bundled_docker_files_match_the_repo_copies():
 
 def test_version_is_2_0_1():
     import resonant_archive
-    assert resonant_archive.__version__ == "2.0.1"
+    assert resonant_archive.__version__ == "2.1.0"
 
 
 def test_migrate_v01_reads_nothing(tmp_path):
