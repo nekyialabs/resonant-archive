@@ -15,3 +15,21 @@ def test_a_path_with_characters_outside_the_ansi_code_page_prints_through_a_pipe
                          capture_output=True, env=env, creationflags=fsutil.NO_WINDOW)
     assert out.returncode == 0, out.stderr.decode("utf-8", "replace")[-400:]
     assert name.encode("utf-8") in out.stdout
+
+
+def test_a_tilde_path_is_expanded_by_the_tool_when_the_shell_does_not_do_it():
+    """PowerShell and cmd pass a leading ~ through as typed; on Linux the shell has already expanded it."""
+    from pathlib import Path
+
+    from typer.testing import CliRunner
+
+    from resonant_archive import cli
+
+    home = Path(os.environ["USERPROFILE"])
+    (home / "notes").mkdir()
+    (home / "notes" / "a.md").write_text("hello " * 40)
+    res = CliRunner().invoke(cli.app, ["import", "~/notes"])
+    assert "does not exist" not in res.output                      # it got past the path check, to the database check
+    assert res.exit_code == 1 and "no database configured" in res.output
+    res = CliRunner().invoke(cli.app, ["import", "~/nothing-here"])
+    assert "nothing-here does not exist" in res.output and str(home) in res.output

@@ -194,6 +194,7 @@ def cmd_import(
 ) -> None:
     """Import a folder or file. Incremental: an unchanged input is skipped, so running it again is cheap."""
     _warn_argv_dsn(dsn)
+    path = path.expanduser()   # a shell expands ~ itself on Linux and macOS; PowerShell and cmd hand it over as typed
     if not path.exists():
         raise _fail(f"{path} does not exist")
     if date_order not in ("dmy", "mdy"):
@@ -258,7 +259,7 @@ def cmd_models_fetch(
             typer.echo(f"  {name}: {pct}%", err=True)
 
     try:
-        d = fetch_model(model_dir, force=force, progress=progress)
+        d = fetch_model(model_dir.expanduser() if model_dir else None, force=force, progress=progress)
     except ModelIntegrityError as exc:
         raise _fail(f"model check failed: {exc}") from None
     except OSError as exc:
@@ -277,7 +278,7 @@ def cmd_serve(
     from .embed import server
 
     try:
-        code = server.serve(host, port, model_dir=model_dir, threads=threads)
+        code = server.serve(host, port, model_dir=model_dir.expanduser() if model_dir else None, threads=threads)
     except (server.NonLoopbackHost, FileExistsError) as exc:
         raise _fail(str(exc), 2) from None
     except Exception as exc:  # ModelIntegrityError, FileNotFoundError (model not fetched), RuntimeError
