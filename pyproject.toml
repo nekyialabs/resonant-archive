@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-archive"
-version = "2.0.1"
+version = "2.1.0"
 description = "Make compaction bearable: a local, searchable archive of your AI conversations (Postgres, pgvector, local embeddings) plus a Claude Code mod for compaction."
 readme = "README.md"
 requires-python = ">=3.11"
