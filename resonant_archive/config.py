@@ -1,10 +1,11 @@
-"""Configuration: where the database is, and where files live (XDG paths).
+"""Configuration: where the database is, and where files live (XDG paths; ``%LOCALAPPDATA%`` on Windows).
 
 The database address (DSN) is never read from a file inside the repository. Resolution order:
 
 1. an explicit argument,
 2. the environment variable ``RESONANT_ARCHIVE_DSN`` (``RESONANT_ARCHIVE_READONLY_DSN`` for the read-only role),
-3. ``$XDG_CONFIG_HOME/resonant-archive/config.toml`` (default ``~/.config/resonant-archive/config.toml``)::
+3. ``$XDG_CONFIG_HOME/resonant-archive/config.toml`` (default ``~/.config/resonant-archive/config.toml``, and
+   ``%LOCALAPPDATA%/resonant-archive/config/config.toml`` on Windows)::
 
        [database]
        dsn = "postgresql://owner:password@127.0.0.1:54329/resonant_archive"
@@ -16,6 +17,7 @@ The file is written with mode 0600 because a DSN carries a password.
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -38,23 +40,39 @@ class ConfigError(RuntimeError):
     """Raised when something the caller needs (usually the DSN) is not configured."""
 
 
-def _xdg(var: str, fallback: str) -> Path:
+def _xdg(var: str, fallback: str, windows: str) -> Path:
+    """An XDG folder when its variable is set (and absolute). Otherwise ``~/<fallback>`` on Linux and macOS and
+    ``%LOCALAPPDATA%/resonant-archive/<windows>`` on Windows, the folder the embed server already used for the model
+    (the folder is per machine, not roaming: it holds a database password)."""
     base = os.environ.get(var)
     if base and os.path.isabs(base):
-        return Path(base)
-    return Path.home() / fallback
+        return Path(base) / APP
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        root = (Path(local) if local and os.path.isabs(local) else Path.home() / "AppData" / "Local") / APP
+        return root / windows if windows else root
+    return Path.home() / fallback / APP
+
+
+def _legacy_windows(new: Path, old: Path) -> Path:
+    """Before Windows had its own folders the package used ``~/.config`` and ``~/.local/share`` there too. A person who
+    already has settings in the old place keeps them until the new place has some."""
+    if sys.platform == "win32" and not new.exists() and old.exists():
+        return old
+    return new
 
 
 def config_dir() -> Path:
-    return _xdg("XDG_CONFIG_HOME", ".config") / APP
+    new = _xdg("XDG_CONFIG_HOME", ".config", "config")
+    return _legacy_windows(new, Path.home() / ".config" / APP)
 
 
 def data_dir() -> Path:
-    return _xdg("XDG_DATA_HOME", ".local/share") / APP
+    return _xdg("XDG_DATA_HOME", ".local/share", "")
 
 
 def state_dir() -> Path:
-    return _xdg("XDG_STATE_HOME", ".local/state") / APP
+    return _xdg("XDG_STATE_HOME", ".local/state", "state")
 
 
 def config_file() -> Path:

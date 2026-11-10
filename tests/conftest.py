@@ -29,11 +29,15 @@ ENV_TEST_DSN = "RESONANT_ARCHIVE_TEST_DSN"
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
     """No test may read or write the real user config or point at a real database."""
-    for var in ("RESONANT_ARCHIVE_DSN", "RESONANT_ARCHIVE_READONLY_DSN", "RESONANT_ARCHIVE_CONFIG"):
+    for var in ("RESONANT_ARCHIVE_DSN", "RESONANT_ARCHIVE_READONLY_DSN", "RESONANT_ARCHIVE_CONFIG",
+                "RESONANT_ARCHIVE_DATA_DIR", "RESONANT_EMBEDDER_MODEL_DIR", "PGCONNECT_TIMEOUT"):
         monkeypatch.delenv(var, raising=False)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))            # Path.home() on Windows reads this, not HOME
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(home / "state"))
