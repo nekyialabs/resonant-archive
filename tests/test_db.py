@@ -79,10 +79,22 @@ def test_connect_readonly_refuses_writes(dsn):
                       "VALUES ('a', 's', 'c', now(), 'user', 'x', 0)")
 
 
+# Port 1 refuses at once on Linux, but libpq on Windows waited 130 s for it: these DSNs name their own short timeout
+# (a DSN's own connect_timeout wins over the default), and test_connect_timeout_default_* covers the default.
 def test_connect_failure_hides_password():
     with pytest.raises(db.DatabaseError) as err:
-        db.connect("postgresql://u:hunter2secret@127.0.0.1:1/none")
+        db.connect("postgresql://u:hunter2secret@127.0.0.1:1/none?connect_timeout=2")
     assert "hunter2secret" not in str(err.value)
+
+
+def test_connect_timeout_default_applies_unless_the_dsn_or_environment_sets_one(monkeypatch):
+    monkeypatch.delenv("PGCONNECT_TIMEOUT", raising=False)
+    assert config.connect_kwargs("postgresql://u@h/d") == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs(None) == {"connect_timeout": config.CONNECT_TIMEOUT_S}
+    assert config.connect_kwargs("postgresql://u@h/d?connect_timeout=3") == {}
+    assert config.connect_kwargs("host=h dbname=d connect_timeout=3") == {}
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", "4")
+    assert config.connect_kwargs("postgresql://u@h/d") == {}
 
 
 def _without_reader(checks):
@@ -111,7 +123,7 @@ def test_doctor_fix_repairs(blank_dsn):
 
 
 def test_doctor_reports_unreachable_database_without_raising():
-    checks = db.doctor("postgresql://u:pw@127.0.0.1:1/none")
+    checks = db.doctor("postgresql://u:pw@127.0.0.1:1/none?connect_timeout=2")
     assert checks[0].name == "connection" and not checks[0].ok
     assert "pw@" not in checks[0].detail
 

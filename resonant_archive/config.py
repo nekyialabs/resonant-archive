@@ -148,6 +148,20 @@ def _toml_value(v: Any) -> str:
     return _toml_str(str(v))
 
 
+#: Seconds to wait for a connection when neither the DSN nor PGCONNECT_TIMEOUT says. libpq's own default is to wait
+#: forever; on Windows a refused connection (nothing listening yet, Docker still starting) was measured at 130 s
+#: before the error came back, so a down database hung the CLI and the MCP server for two minutes.
+CONNECT_TIMEOUT_S = 10
+
+
+def connect_kwargs(dsn: str | None) -> dict[str, int]:
+    """``{"connect_timeout": 10}`` for ``psycopg.connect``, or ``{}`` when the DSN or PGCONNECT_TIMEOUT already
+    sets one (the person's own value wins)."""
+    if os.environ.get("PGCONNECT_TIMEOUT") or "connect_timeout" in (dsn or "").lower():
+        return {}
+    return {"connect_timeout": CONNECT_TIMEOUT_S}
+
+
 def redact_dsn(dsn: str) -> str:
     """The DSN with its password hidden, for messages and logs."""
     import re
