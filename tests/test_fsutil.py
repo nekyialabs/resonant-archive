@@ -84,10 +84,18 @@ def restriction_fails(monkeypatch):
 
         monkeypatch.setattr(fsutil.subprocess, "run", run)
     else:
-        def chmod(*a, **kw):
-            raise PermissionError("no")
+        class FailingChmod:
+            """fsutil's view of os, with chmod refused. Patching os.chmod itself would break the test's own setup
+            (shutil.copy calls it), so only the module under test sees the failure."""
 
-        monkeypatch.setattr(fsutil.os, "chmod", chmod)
+            def __getattr__(self, name):
+                return getattr(os, name)
+
+            @staticmethod
+            def chmod(*a, **kw):
+                raise PermissionError("no")
+
+        monkeypatch.setattr(fsutil, "os", FailingChmod())
     fsutil.take_unprotected()
     yield
     fsutil.take_unprotected()
@@ -116,7 +124,7 @@ def test_init_docker_says_in_its_result_that_the_env_file_is_not_private(tmp_pat
 
     from resonant_archive import cli
 
-    sh.copy(Path(__file__).resolve().parent.parent / "docker-compose.yml", tmp_path / "docker-compose.yml")
+    sh.copyfile(Path(__file__).resolve().parent.parent / "docker-compose.yml", tmp_path / "docker-compose.yml")
     res = CliRunner().invoke(cli.app, ["init", "--docker", "--project-dir", str(tmp_path)])
     assert res.exit_code == 0, res.output
     assert ".env" in res.output and "could NOT be restricted" in res.output
