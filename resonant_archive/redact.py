@@ -174,10 +174,11 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
                 r"[ \t]*(?:Value|VariableValue)[ \t]*[:=][ \t]*)(?![ \t]|\[redacted).+$", re.I | re.M), r"\1[redacted:secret]"),
     # reg query output:  <name>    REG_SZ    <value>   and   reg add ... /v <name> /d <value>
     ("win-registry",
-     re.compile(r"^([ \t]{1,16}(?![ \t])[^\r\n]{0,120}?" + _WIN_WORD + r"[^\r\n]{0,120}?[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$",
+     # The value name runs to the first double space (one scan, no second lazy window), and a lookahead finds the secret word in it.
+     re.compile(r"^([ \t]{1,16}(?![ \t])(?=[^\r\n]{0,120}?" + _WIN_WORD + r")(?:(?![ \t]{2})[^\r\n]){1,120}[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$",
                 re.I | re.M), r"\1[redacted:secret]"),
     ("win-registry",
-     re.compile(r"(\breg(?:\.exe)?[ \t]+add\b[^\r\n]{0,150}?/v[ \t]+\"?[^\s\"]{0,50}?" + _WIN_WORD + r"[^\s\"]{0,50}\"?[^\r\n]{0,60}?/d[ \t]+)"
+     re.compile(r"(\breg(?:\.exe)?[ \t]+add\b(?:(?!/v[ \t])[^\r\n]){0,80}/v[ \t]+\"?[^\s\"]{0,40}?" + _WIN_WORD + r"[^\s\"]{0,40}\"?(?:(?!/d[ \t])[^\r\n]){0,40}/d[ \t]+)"
                 r"(?!\[redacted)" + _FLAG_VALUE, re.I), r"\1[redacted:secret]"),
     # name [: or =] value, with the name anywhere in the word (DB_PASSWORD, "apiKey", secret access key). Values that
     # are placeholders (${VAR}, <your-key>, %s) or already redacted are left; short values (a type name) are left.

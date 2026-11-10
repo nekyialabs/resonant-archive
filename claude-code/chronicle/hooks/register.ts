@@ -525,8 +525,8 @@ const REDACTIONS: readonly [RegExp, string][] = [
   [/^((?:[A-Z][A-Z0-9_]{0,60}?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|PASS|CREDENTIALS?)[A-Z0-9_]{0,60}[ \t]{2,})(?![ \t]|\[redacted).+$/gm, '$1[redacted:secret]'],
   [new RegExp(String.raw`^([ \t]{0,16}Name[ \t]{0,16}[:=][ \t]{0,16}[A-Za-z0-9_]{0,60}?` + WIN_WORD + String.raw`[A-Za-z0-9_]{0,60}[ \t]*\r?\n[ \t]*(?:Value|VariableValue)[ \t]*[:=][ \t]*)(?![ \t]|\[redacted).+$`, 'gim'), '$1[redacted:secret]'],
   // reg query output:  <name>    REG_SZ    <value>   and   reg add ... /v <name> /d <value>
-  [new RegExp(String.raw`^([ \t]{1,16}(?![ \t])[^\r\n]{0,120}?` + WIN_WORD + String.raw`[^\r\n]{0,120}?[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$`, 'gim'), '$1[redacted:secret]'],
-  [new RegExp(String.raw`(\breg(?:\.exe)?[ \t]+add\b[^\r\n]{0,150}?/v[ \t]+"?[^\s"]{0,50}?` + WIN_WORD + String.raw`[^\s"]{0,50}"?[^\r\n]{0,60}?/d[ \t]+)(?!\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`^([ \t]{1,16}(?![ \t])(?=[^\r\n]{0,120}?` + WIN_WORD + String.raw`)(?:(?![ \t]{2})[^\r\n]){1,120}[ \t]{2,}REG_(?:SZ|EXPAND_SZ|MULTI_SZ|BINARY)[ \t]{2,})(?![ \t]|\[redacted).+$`, 'gim'), '$1[redacted:secret]'],
+  [new RegExp(String.raw`(\breg(?:\.exe)?[ \t]+add\b(?:(?!/v[ \t])[^\r\n]){0,80}/v[ \t]+"?[^\s"]{0,40}?` + WIN_WORD + String.raw`[^\s"]{0,40}"?(?:(?!/d[ \t])[^\r\n]){0,40}/d[ \t]+)(?!\[redacted)` + FLAG_VALUE, 'gi'), '$1[redacted:secret]'],
   // name [: or =] value, the name anywhere in the word (DB_PASSWORD, "apiKey"); placeholders and short values stay
   [/((?:secret[ _-]?access[ _-]?key|secret[ _-]?key|access[ _-]?key|api[ _-]?key|private[ _-]?key|client[ _-]?secret|secret|password|passwd|passphrase|token|credentials?)[A-Za-z0-9_-]{0,30}["']?[ \t]*[:=][ \t]*["']?)(?!\[redacted|[$<{%])[^\s"',;}\]]{8,}/gi, '$1[redacted:secret]'],
   // a short value after an explicit password key (the rule above wants 8+); a type name or a call is left, and so is a
