@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import psycopg
@@ -17,6 +18,7 @@ from resonant_archive.redact import Redactor
 from resonant_archive.secret_sources import INPUT_WITHHELD, WITHHELD, secret_bearing, secret_call_summary
 
 from . import synth
+from .symhelp import symlink_or_skip
 from .secret_cases import ORDINARY_CALLS, SECRET_CALLS
 
 BASE = {"sessionId": "s1", "entrypoint": "cli"}
@@ -258,7 +260,7 @@ def test_symlinked_files_are_not_followed(dsn, tmp_path):
     notes = tmp_path / "notes"
     notes.mkdir()
     (notes / "real.md").write_text("an ordinary note " * 30)
-    os.symlink(outside, notes / "link.md")
+    symlink_or_skip(outside, notes / "link.md")
     rep = commands.import_path("markdown_folder", notes, dsn=dsn)
     assert rep.ok and rep.importer_stats["skipped symlink"] == 1
     assert not q(dsn, "SELECT 1 FROM messages WHERE text LIKE '%SECRET-IN-A-FILE%'")
@@ -270,7 +272,7 @@ def test_a_symlinked_project_folder_pointing_outside_is_skipped(dsn, tmp_path):
     synth.jl(real / "s1.jsonl", [user("u1", "OUTSIDE-ROOT-CONTENT hello there")])
     root = tmp_path / "projects"
     root.mkdir()
-    os.symlink(real, root / "proj")
+    symlink_or_skip(real, root / "proj", directory=True)
     rep = commands.import_path("claude_code", root, dsn=dsn) if importers.detect(root) else None
     found = list(importers.get("claude_code").units(root, Options()))
     assert found == []
@@ -281,15 +283,33 @@ def test_symlinked_jsonl_is_skipped_by_every_jsonl_importer(tmp_path):
     outside = synth.jl(tmp_path / "out" / "x.jsonl", [user("u1", "hello")])
     d = tmp_path / "cc" / "proj"
     d.mkdir(parents=True)
-    os.symlink(outside, d / "s1.jsonl")
+    symlink_or_skip(outside, d / "s1.jsonl")
     imp = importers.get("claude_code")
     assert list(imp.units(tmp_path / "cc", Options())) == [] and imp.skipped["symlink"] == 1
     assert importers.detect(tmp_path / "cc") == []
     day = tmp_path / "mirror" / "2026-04-01"
     day.mkdir(parents=True)
-    os.symlink(outside, day / "sid.jsonl")
+    symlink_or_skip(outside, day / "sid.jsonl")
     imp = importers.get("chronicle_mirror")
     assert list(imp.units(tmp_path / "mirror", Options())) == [] and imp.skipped["symlink"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are a Windows thing")
+def test_a_directory_junction_pointing_outside_is_not_read(tmp_path):
+    """A junction is not a symlink to Python (is_symlink() is False and os.walk descends into it, and `mklink /J` needs
+    no privilege), so only the resolve-inside-the-root check stands between an archive folder and a folder elsewhere."""
+    import _winapi
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("SECRET-IN-A-FOLDER-OUTSIDE " * 40)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "real.md").write_text("an ordinary note " * 30)
+    _winapi.CreateJunction(str(outside), str(notes / "linked"))
+    imp = importers.get("markdown_folder")
+    keys = [u.key for u in imp.units(notes, Options())]
+    assert keys == ["real.md"] and imp.skipped["outside root"] == 1
 
 
 def test_oversized_file_is_skipped_not_truncated(dsn, tmp_path, monkeypatch):
@@ -303,6 +323,7 @@ def test_oversized_file_is_skipped_not_truncated(dsn, tmp_path, monkeypatch):
     assert q(dsn, "SELECT count(DISTINCT conv_id) FROM messages")[0][0] == 1
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Windows has no FIFOs")
 def test_fifo_is_not_read(tmp_path):
     notes = tmp_path / "notes"
     notes.mkdir()
@@ -348,7 +369,7 @@ def test_pipeline_rechecks_a_unit_a_plugin_listed(dsn, tmp_path):
     target.write_text("x")
     link = tmp_path / "root" / "l.md"
     link.parent.mkdir()
-    os.symlink(target, link)
+    symlink_or_skip(target, link)
 
     class Sloppy(Importer):
         name, default_source = "sloppy", "sloppy"

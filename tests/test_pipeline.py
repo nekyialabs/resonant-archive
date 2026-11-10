@@ -13,6 +13,7 @@ from resonant_archive.importers.base import Importer, Options, Record, Unit
 
 from . import synth
 from .permcheck import is_private
+from .symhelp import symlink_or_skip
 
 
 def q(dsn, sql, *args):
@@ -357,7 +358,7 @@ def test_rebuild_with_a_symlinked_file_keeps_everything(dsn, tmp_path):
     assert q(dsn, "SELECT count(*) FROM messages")[0][0] == 16
     real = tmp_path / "elsewhere.jsonl"
     a.rename(real)
-    a.symlink_to(real)
+    symlink_or_skip(real, a)
     rep = commands.import_path("claude_code", root, dsn=dsn, rebuild=True, yes=True)
     assert rep.removed == 0 and q(dsn, "SELECT count(*) FROM messages")[0][0] == 16
     assert any("not read" in n and "nothing was removed" in n for n in rep.notes)
