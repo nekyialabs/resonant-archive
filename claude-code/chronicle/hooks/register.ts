@@ -113,7 +113,7 @@ export function validZone(z: string): boolean {
 }
 
 function expandHome(p: string, home: string | undefined): string {
-  if (p === '~' || p.startsWith('~/')) return home ? `${home.replace(/\/+$/, '')}${p.slice(1)}` : ''
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return home ? `${home.replace(/[\\/]+$/, '')}${p.slice(1)}` : ''
   return p
 }
 
@@ -132,7 +132,7 @@ export function normalizeConfig(raw: unknown, home?: string): Cfg {
   const min = pickNum(firstDefined(memories.chunkMinTokens, r.chunkMinTokens), DEFAULT_CHUNK_MIN)
   const zone = pickStr(r.timezone, '').trim()
   return {
-    archiveRoot: root.replace(/\/+$/, '') || root,
+    archiveRoot: root.replace(/[\\/]+$/, '') || root,
     timezone: validZone(zone) ? zone : '',
     names: { user: pickStr(names.user, '').trim() || 'You', agent: pickStr(names.agent, '').trim() || 'Assistant' },
     mirrorEnabled: pickBool(mirrorC.enabled, true),
@@ -187,9 +187,11 @@ async function cfgOf($: EngineInterface): Promise<Cfg> {
     if (!/ENOENT|no such file|not found|does not exist|no implementation/i.test(why(err))) { try { $.ui.log(`chronicle: chronicle.json not used (${why(err)}); defaults apply`, { to: 'debug' }) } catch {} }
   }
   let home: string | undefined
-  try { home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) } catch {}
   let os = ''
   try { os = (await $.env.get('OS')) ?? '' } catch {}
+  // On Windows the profile folder is USERPROFILE. HOME, when something set it, may be an MSYS path (/c/Users/me, from
+  // Git Bash) that PowerShell and $.fs cannot open, so it is only the fallback there.
+  try { home = os === 'Windows_NT' ? ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))) : ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))) } catch {}
   isWin = os === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(home ?? '')
   const cfg = normalizeConfig(raw, home)
   if (cfg.ignored.length) { try { $.ui.log(`chronicle: unknown settings ignored: ${cfg.ignored.join(', ')}`, { to: 'debug' }) } catch {} }
@@ -356,7 +358,8 @@ async function readWhole($: EngineInterface, paths: string[]): Promise<{ stdout:
   for (const p of paths) {
     try {
       const t = String(await $.fs.read(p))
-      stdout += t.endsWith('\n') || !t ? t : `${t}\n`
+      const u = t.replace(/\r\n/g, '\n') // a mirror file saved with CRLF reads the same
+      stdout += u.endsWith('\n') || !u ? u : `${u}\n`
     } catch (err) {
       if (/MiB|too large|exceeds/i.test(why(err))) isStdoutTruncated = true; else exitCode = 1
     }
@@ -396,7 +399,7 @@ async function grepLinesWin($: EngineInterface, patterns: string[], paths: strin
       if (!/ENOENT|no such file|not found|does not exist/i.test(w)) error ??= w.slice(0, 200)
       continue
     }
-    for (const line of text.split('\n')) {
+    for (const line of text.split(/\r?\n/)) {
       if (!line) continue
       if (needles.length) { const low = line.toLowerCase(); if (!needles.some(n => low.includes(n))) continue }
       if (used + line.length > GREP_OUT_CAP) { cut = true; break }
@@ -1193,7 +1196,7 @@ async function currentSid($: EngineInterface): Promise<string> {
 // The whole recall. Returns the text the assistant reads. Throws only on an engine failure; the tool hook catches that.
 async function recall($: EngineInterface, input: RecallInput): Promise<string> {
   const cfg = await cfgOf($)
-  const root = cfg.archiveRoot.replace(/\/+$/, '')
+  const root = cfg.archiveRoot.replace(/[\\/]+$/, '')
   if (!cfg.mirrorEnabled) return 'recall: the mirror is switched off (mirror.enabled is false in chronicle.json), so there is no session record to search.'
   if (!root) return 'recall: no archive folder (archiveRoot starts with ~ and HOME is not set).'
   // Rows from the last few seconds are still in the buffer: write them first so they can be found.
@@ -2448,7 +2451,7 @@ async function assemblyFor($: EngineInterface, cfg: Cfg, msgs: readonly SessionM
     const off = assemblyAllowed(cfg.assembleWithMemories, trigger)
     if (off) return off
     if (!sessionId || sessionId === 'unknown') return 'no session id'
-    const ev = await memoryEvidence($, cfg.archiveRoot.replace(/\/+$/, ''), sessionId)
+    const ev = await memoryEvidence($, cfg.archiveRoot.replace(/[\\/]+$/, ''), sessionId)
     if (typeof ev === 'string') return ev
     return planAssembly(msgs, cut, ev.mems, ev.seq, {
       gapRawMax: posInt(cfg.gapRawMaxTokens, DEFAULT_GAP_RAW_MAX),

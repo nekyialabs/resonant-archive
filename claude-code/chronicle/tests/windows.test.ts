@@ -107,3 +107,48 @@ test('on Windows recall lists and searches the mirror through $.fs, no rg', asyn
   const around = textOf(await $.tool.call({ tool: 'mcp__chronicle__recall', around: 'aaaaaaaa-0000-4000-8000-000000000001' }))
   expect(around).toContain('balcony')
 })
+
+// ---- the Windows spellings of a home folder and an archive root, and CRLF in a mirror file ----
+
+const appendScript = (r: ReturnType<typeof winRig>): string => {
+  const ps = r.runs.filter(x => x.argv[0] === 'powershell.exe')
+  expect(ps.length).toBe(1)
+  const argv = ps[0]!.argv
+  return decode(String(argv[argv.indexOf('-EncodedCommand') + 1]))
+}
+
+test('on Windows the home folder is USERPROFILE even when Git Bash left HOME as an MSYS path', async ($, on) => {
+  const r = winRig(on, { config: { timezone: 'UTC' }, env: { HOME: '/c/Users/tester', OS: 'Windows_NT', USERPROFILE: HOME }, now: Date.UTC(2026, 0, 5, 12, 0, 0) })
+  await start($)
+  await $.session.append(row('hello'))
+  await r.clock.advance(31_000); await settle()
+  const script = appendScript(r)
+  expect(script).toContain(`CreateDirectory('${HOME}/.chronicle/archive/2026-01-05')`)
+  expect(script).not.toContain('/c/Users')
+})
+
+test('on Windows archiveRoot may be written ~\dir\ and keeps a backslash-free join', async ($, on) => {
+  const r = winRig(on, { config: { timezone: 'UTC', archiveRoot: '~\\mirror\\' }, now: Date.UTC(2026, 0, 5, 12, 0, 0) })
+  await start($)
+  await $.session.append(row('hello'))
+  await r.clock.advance(31_000); await settle()
+  expect(appendScript(r)).toContain(`CreateDirectory('${HOME}\\mirror/2026-01-05')`)
+})
+
+test('on Windows recall reads a mirror file that was saved with CRLF line endings', async ($, on) => {
+  const line = (t: number, text: string, u: string) => JSON.stringify({ t, sid: 'sess-0', uuid: u, door: 'prompt', origin: { kind: 'composer' }, role: 'user', text }) + '\r\n'
+  winRig(on, {
+    config: { timezone: 'UTC' },
+    files: {
+      [`${ROOT}/.chronicle.json`]: JSON.stringify({ timezone: 'UTC', format: 1 }),
+      [`${ROOT}/2026-01-04/sess-0.jsonl`]: line(Date.UTC(2026, 0, 4, 9), 'the hibiscus bloomed red', 'aaaaaaaa-0000-4000-8000-000000000001') + line(Date.UTC(2026, 0, 4, 10), 'tea on the balcony', 'aaaaaaaa-0000-4000-8000-000000000002'),
+    },
+  })
+  await start($)
+  const textOf = (o: any): string => String(o?.text ?? o?.result ?? '')
+  const out = textOf(await $.tool.call({ tool: 'mcp__chronicle__recall', query: 'hibiscus' }))
+  expect(out).toContain('hibiscus bloomed red')
+  expect(out).not.toContain('\r')
+  const around = textOf(await $.tool.call({ tool: 'mcp__chronicle__recall', around: 'aaaaaaaa-0000-4000-8000-000000000001' }))
+  expect(around).toContain('balcony')
+})
