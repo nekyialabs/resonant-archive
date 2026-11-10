@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Files written by Windows tools are read correctly.** A UTF-8 byte-order mark (Notepad) stopped Markdown front matter from being seen and dropped the first key of a `.env`; UTF-16 files (PowerShell 5.1's `>`) read as noise, so `--known-secrets` found nothing to redact; a BOM on a JSON-lines file hid its first line. All are decoded now.
 - **Output to a pipe no longer dies on a character outside the ANSI code page** (a path or a hit with Japanese or an emoji raised `UnicodeEncodeError` on Windows).
 - **`resonant-archive import ~/.claude/projects` works in PowerShell and cmd**, which do not expand `~`.
+- **A timestamp before 1970 with no time zone no longer crashes an import on Windows** (`astimezone()` raised `OSError`); the offset in force now is used.
 - **The chronicle mod on Windows:** the home folder is `USERPROFILE` (Git Bash sets `HOME` to an MSYS path nothing else can open); `archiveRoot` may be `~\dir` or end in a backslash; a mirror file saved with CRLF is searched correctly.
 - **`chronicle/scripts/lint.sh`** ran `python3`, which on Windows is usually the Microsoft Store stub, and compared paths with `/` against Windows backslashes; it finds a working Python and normalises the paths.
 - **Tests** that cannot run on Windows (symbolic links without Developer Mode, FIFOs) skip with a reason instead of failing, and the Windows-only case of a directory junction pointing outside an archive folder is covered.

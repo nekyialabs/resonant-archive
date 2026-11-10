@@ -47,5 +47,10 @@ def wall_to_utc(naive: dt.datetime, tz: dt.tzinfo | None) -> dt.datetime:
     On the ambiguous autumn hour the first occurrence is taken (fold=0).
     """
     if tz is None:
-        return as_utc(naive.astimezone())  # a naive datetime is interpreted as local time
+        try:
+            return as_utc(naive.astimezone())  # a naive datetime is interpreted as local time
+        except (OSError, OverflowError, ValueError):
+            # Windows cannot convert a local time before 1970 (OSError, Errno 22): use the offset in force now.
+            offset = dt.datetime.now().astimezone().utcoffset()
+            return as_utc(naive.replace(tzinfo=dt.timezone(offset)))
     return as_utc(naive.replace(tzinfo=tz))
