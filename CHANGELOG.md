@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **The chronicle mod runs on Windows.** The five places that shelled out to `sh`, `cat` and ripgrep now have a Windows path: the mirror is appended through `powershell.exe -EncodedCommand` (a byte copy of stdin, no shell quoting), the zone marker is written with `$.fs`, and the archive is listed, searched and read through `$.fs` (fixed strings, case-insensitive, the same semantics as the ripgrep call; capped at 4 MiB like rg's stdout was). Linux and macOS are unchanged. The ripgrep probe is skipped on Windows. The test harness treats a POSIX path and its Windows spelling as one file, takes an `env` option, and `tests/windows.test.ts` covers the append, the zone marker and recall on a Windows host.
+- **The Python package runs on Windows, and CI proves it.** A `windows-latest` job (Python 3.12) runs every test that needs no database, and the mod's lint and tests run there too. Everything below was found by running the suite and the MCP server on Windows 11. The README has a Platforms section saying exactly what works on each system, how to run the archive there (Docker Desktop, or a native PostgreSQL with pgvector), and what has not been tested on Windows (the PostgreSQL-backed paths). `contrib/systemd` is marked Linux-only.
+- **Windows and PowerShell shapes in redaction**, in `redact.py` and the mod, with the same cases in `tests/redaction_cases.py`, `tests/secret_cases.py` and the mod's `redact.test.ts`. Values: `set` / `setx` and `$env:NAME = ...`, `-Password` / `-Token:` / `-ApiKey` / `/pass:` / `/RP` flags (so the command lines that `wmic process` and `Get-Process | Select CommandLine` print are covered), `net use`, `net user`, `sqlcmd -P`, `psexec -p`, `ConvertTo-SecureString ... -AsPlainText`, `gci env:` tables and lists, `wmic environment`, and `reg query` / `reg add`. Calls whose result is withheld whole: `gci env:` and its aliases, `[Environment]::GetEnvironmentVariables()`, `Win32_Process` / `Win32_Service` / `wmic`, `Get-Process ... CommandLine`, `cmdkey /list`, `Get-StoredCredential`, `netsh wlan ... key=clear`, `reg query` of the environment, Winlogon or a secret-looking name, `cmd /c` and `powershell -Command` bodies, and `-EncodedCommand` scripts (decoded first); secret files now match with backslashes and add PowerShell's `ConsoleHost_history.txt`, `Microsoft\Credentials`, `.azure` tokens and `gh\hosts.yml`. Part 2 of the list in #3.
+- **`.gitattributes`.** Text is LF in the repository and in every checkout, so a Windows `core.autocrlf` no longer turns `lint.sh` into a script bash cannot run.
+
+### Changed
+
+- **Where Windows keeps its files.** `config.py` used `~/.config` and `~/.local/share` under the profile folder while the embed server used `%LOCALAPPDATA%\resonant-archive`; both now use `%LOCALAPPDATA%\resonant-archive` (`config\` and `state\` below it). An absolute `XDG_*` variable still wins, and a config or docker folder already in the old place is used until the new place has one.
+- **The redaction rules changed**, so every input is read again once on the next import (`REDACTION_VERSION` 3).
+
+### Fixed
+
+- **A database that is down no longer hangs for two minutes on Windows.** libpq waited 130 s for a refused connection; every connection the package opens now times out after 10 s unless the DSN or `PGCONNECT_TIMEOUT` says otherwise.
+- **The config file and the docker `.env` are private on Windows.** `chmod 0600` does nothing there; they are now made readable by the current user alone with `icacls`, and written as UTF-8 with LF endings (text mode wrote CRLF). A rename over a file that Docker or a virus scanner holds open is retried.
+- **Files written by Windows tools are read correctly.** A UTF-8 byte-order mark (Notepad) stopped Markdown front matter from being seen and dropped the first key of a `.env`; UTF-16 files (PowerShell 5.1's `>`) read as noise, so `--known-secrets` found nothing to redact; a BOM on a JSON-lines file hid its first line. All are decoded now.
+- **Output to a pipe no longer dies on a character outside the ANSI code page** (a path or a hit with Japanese or an emoji raised `UnicodeEncodeError` on Windows).
+- **`resonant-archive import ~/.claude/projects` works in PowerShell and cmd**, which do not expand `~`.
+- **The chronicle mod on Windows:** the home folder is `USERPROFILE` (Git Bash sets `HOME` to an MSYS path nothing else can open); `archiveRoot` may be `~\dir` or end in a backslash; a mirror file saved with CRLF is searched correctly.
+- **`chronicle/scripts/lint.sh`** ran `python3`, which on Windows is usually the Microsoft Store stub, and compared paths with `/` against Windows backslashes; it finds a working Python and normalises the paths.
+- **Tests** that cannot run on Windows (symbolic links without Developer Mode, FIFOs) skip with a reason instead of failing, and the Windows-only case of a directory junction pointing outside an archive folder is covered.
 
 ## [2.0.1] - 2026-10-17
 

@@ -16,7 +16,7 @@ converted in place. Your source files are what matter, and importing them again 
 | `serve` ran a search API daemon | `serve` runs the local embed server. The MCP server needs no daemon. |
 | Python 3.11 or 3.12 | Python 3.11 or newer |
 | MCP tools `archive_search`, `archive_stats` | `search`, `around`, `overview`, `associate`, `stats`. The old names stay as aliases for one release, then go. |
-| Any OS | Linux and macOS first. Windows is not supported yet. |
+| Any OS | Linux, macOS and Windows (see the README's Platforms section). |
 
 ## Steps
 

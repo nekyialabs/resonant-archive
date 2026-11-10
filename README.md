@@ -56,7 +56,7 @@ Version 0.1 said "no database server". Version 2 trades that for exact word sear
 
 ## Quick start
 
-You need Python 3.11+, Docker (or your own Postgres), and for the mod, Claude Code on Linux or macOS.
+You need Python 3.11+, Docker (or your own Postgres), and for the mod, Claude Code on Linux, macOS or Windows (see [Platforms](#platforms)).
 
 ### 1. The mod (two minutes, no database)
 
@@ -84,6 +84,25 @@ resonant-archive recall search "the retry bug in the uploader"
 ```
 
 Search works on words and exact strings as soon as an import finishes. `embed` adds meaning. Until it catches up, the answer footer says how many rows are pending.
+
+**On Windows** (PowerShell; Python 3.11+, and Docker Desktop running for the bundled database, or your own PostgreSQL, see [Platforms](#platforms)):
+
+```powershell
+git clone https://github.com/nekyialabs/resonant-archive
+cd resonant-archive
+py -m pip install -e .                 # or: pipx install .
+
+resonant-archive init --docker --up    # Docker Desktop must be running
+resonant-archive models fetch
+resonant-archive doctor
+
+resonant-archive import "$env:USERPROFILE\.chronicle\archive"    # the mod's mirror
+resonant-archive import "$env:USERPROFILE\.claude\projects"      # your Claude Code history
+resonant-archive embed
+resonant-archive recall search "the retry bug in the uploader"
+```
+
+If `resonant-archive` is not found, the Scripts folder of your Python is not on `PATH` (`pip` prints it); `py -m resonant_archive.cli ...` runs the same program. A leading `~` in a path works too, though PowerShell and cmd do not expand it for you (the tool does).
 
 ### Bring your own Postgres
 
@@ -133,7 +152,7 @@ Useful flags: `--source` (the label stored on each row; `--namespace` still work
 claude mcp add resonant-archive -- resonant-archive mcp
 ```
 
-**Claude Desktop**, in `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Linux: `~/.config/Claude/`):
+**Claude Desktop**, in `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Linux: `~/.config/Claude/`, Windows: `%APPDATA%\Claude\`):
 
 ```json
 {
@@ -146,7 +165,7 @@ claude mcp add resonant-archive -- resonant-archive mcp
 }
 ```
 
-If `resonant-archive` is not on the path Claude Desktop sees, use the full path from `which resonant-archive`.
+If `resonant-archive` is not on the path Claude Desktop sees, use the full path from `which resonant-archive` (Windows: `where.exe resonant-archive`, written in the JSON with doubled backslashes: `"C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\resonant-archive.exe"`).
 
 | Tool | What it does |
 |---|---|
@@ -194,9 +213,31 @@ Details in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 v0.1 kept vectors in a Chroma folder with a different model, so they can't be carried over. Your source files can: import them again, then embed. The old folder is never read or deleted by this tool. Steps in [docs/MIGRATING-FROM-0.1.md](docs/MIGRATING-FROM-0.1.md), or run `resonant-archive migrate-v01`.
 
+## Platforms
+
+| | Linux, macOS | Windows 11 (10 should work, untested) |
+|---|---|---|
+| **The chronicle mod** | Yes. Needs `sh`, `mkdir`, `cat` and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) on the path. | Yes, with nothing extra installed: the mirror is appended through `powershell.exe -EncodedCommand`, and the archive is listed, searched and read through the engine's own file API. No `sh`, `rg` or `cat`. |
+| **The CLI, importers, MCP server, embed server** | Yes. Python 3.11+. | Yes, natively, Python 3.11+ (PowerShell or cmd; no WSL needed). |
+| **PostgreSQL + pgvector** | The bundled `docker-compose.yml` (`init --docker --up`), or your own PostgreSQL 15+. | Docker Desktop and `init --docker --up`, or your own native PostgreSQL 15+ with `vector` and `pg_trgm` (see below). |
+| **`contrib/systemd`** | Yes (Linux, systemd). | Linux only. On Windows run `resonant-archive serve` in a terminal, or do nothing: the MCP server loads the model in its own process when no embed server is up. |
+
+**Windows, the details**
+
+- **Where things live.** Settings in `%LOCALAPPDATA%\resonant-archive\config\config.toml`; the model, and the `docker-compose.yml` and `.env` that `init --docker` writes, in `%LOCALAPPDATA%\resonant-archive`; the mod's mirror in `%USERPROFILE%\.chronicle\archive`; Claude Code's transcripts in `%USERPROFILE%\.claude\projects` (one folder per working directory, named with the drive and separators turned into dashes, such as `C--Users-you-project`). An absolute `XDG_CONFIG_HOME` / `XDG_DATA_HOME` still wins if you set one. A config or docker folder an earlier version put under `~\.config` or `~\.local\share` is still used until the new place has one.
+- **Private files.** Windows has no file mode bits. The config file and the `.env` (both hold a database password) are made readable by your account alone with `icacls` (inheritance removed, your user granted full control), where Linux uses mode 0600. The mod's mirror is not locked down further: it sits in your profile folder, which is private to your account already.
+- **Your own PostgreSQL.** Install PostgreSQL 15 or newer for Windows (`pg_trgm` comes with it). Most Windows installers do not include pgvector: build it as the [pgvector README](https://github.com/pgvector/pgvector#windows) describes, or use a distribution that bundles it, then `CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;` in the archive's database as a superuser and set `RESONANT_ARCHIVE_DSN` (`$env:RESONANT_ARCHIVE_DSN = "postgresql://..."`).
+- **A database that is down** is reported after 10 seconds, not minutes (libpq on Windows waits a long time for a refused connection otherwise). Put `connect_timeout=N` in the DSN, or set `PGCONNECT_TIMEOUT`, to change that.
+- **Time zone.** Windows has no `TZ` or `/etc/timezone`. Without `RESONANT_ARCHIVE_TZ` (or `TZ`) set to an IANA name such as `Europe/London`, `recall` works out "today" and date ranges in UTC. Importers that read a timestamp with no zone use the machine's own zone, as everywhere.
+- **Files written by Windows tools.** A UTF-8 byte-order mark (Notepad), UTF-16 (PowerShell 5.1's `>` and `Out-File`) and CRLF line endings are read correctly in Markdown, JSON-lines and `--known-secrets` files.
+- **Output encoding.** Output to a pipe or a file is UTF-8 whatever the console's code page is.
+- **Long paths.** Python on Windows is limited to 260-character paths unless long paths are switched on (Windows setting `LongPathsEnabled`). The defaults are well under it; a deeply nested `--project-dir` or Markdown folder may not be.
+- **Symlinks.** Importers skip symbolic links and directory junctions that lead outside the folder you named, as on Linux.
+- **What has and has not been tested on Windows.** The Python test suite that needs no database runs on Windows 11 with Python 3.13, and in CI on `windows-latest` with Python 3.12. The MCP server's stdio handshake and tool list were run by hand on Windows. The tests that need PostgreSQL run on Linux CI only; no maintainer has run `init`, an import or a search against a real database on Windows, so those paths are expected to work (they use the same driver everywhere) but are not verified there. The mod's test suite runs on Windows and on Linux.
+
 ## Caveats
 
-- **Linux and macOS.** Windows is not supported yet. The mod shells out to `rg`, `sh`, `mkdir` and `cat`.
+- **Windows needs the details above.** Everything runs there, but the database-backed paths are not covered by tests on Windows (see Platforms).
 - **Hooks are early access.** The mod depends on Claude Code features that may change between releases. The mod README records the Claude Code version it was tested against.
 - **Postgres is required** for the archive. That's a change from v0.1.
 - **Memory formation is off by default.** The optional memories feature spends model calls in the background. See [docs/COMPACTION.md](docs/COMPACTION.md).

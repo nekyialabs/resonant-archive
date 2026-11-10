@@ -19,7 +19,7 @@ resonant-archive models fetch
 ```
 
 This downloads four files from the Hugging Face repo at a **pinned revision**, into
-the data folder (`~/.local/share/resonant-archive/models/nomic-embed-text-v1.5` on Linux), and verifies each against a **pinned SHA-256 sum and size**. A mismatch deletes
+the data folder (`~/.local/share/resonant-archive/models/nomic-embed-text-v1.5` on Linux, `%LOCALAPPDATA%/resonant-archive/models/nomic-embed-text-v1.5` on Windows), and verifies each against a **pinned SHA-256 sum and size**. A mismatch deletes
 the file and stops. Nothing unverified is left under its final name.
 
 **Offline:** put the files in a folder and run `resonant-archive models fetch --model-dir /that/folder`. Files that

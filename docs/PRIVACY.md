@@ -7,14 +7,14 @@ resonant-archive holds your conversations. This page says where they go, and whe
 - **The mirror** (written by the chronicle mod): `~/.chronicle/archive` by default. Folders 0700, files 0600.
 - **The database**: Postgres. With the bundled compose file, a named Docker volume on your machine.
 - **The database address** (it contains a password): `~/.config/resonant-archive/config.toml`, mode 0600, or the
-  `RESONANT_ARCHIVE_DSN` environment variable. Never a file inside the repository, and keep it off the command line
+  `RESONANT_ARCHIVE_DSN` environment variable (Windows: `%LOCALAPPDATA%/resonant-archive/config/config.toml`, readable by your account alone through an ACL, since Windows has no mode bits). Never a file inside the repository, and keep it off the command line
   (`--dsn` is visible to other users through `ps`; the docs use the variable). There are two addresses: the owner's
   `dsn`, and `readonly_dsn` for a login that can only read, which `init` creates for the MCP server and `recall`.
 - **The `.env` that `init --docker` writes** (the database password): in `~/.local/share/resonant-archive/docker` unless
   you choose `--project-dir`, mode 0600, and git-ignored. A placeholder or short password in an existing `.env` is
   replaced with a random one; a good one is kept and its mode is tightened to 0600.
 - **The model**: `models/nomic-embed-text-v1.5` inside the data folder (`~/.local/share/resonant-archive` on Linux,
-  `~/Library/Application Support/resonant-archive` on macOS; `RESONANT_ARCHIVE_DATA_DIR` or
+  `~/Library/Application Support/resonant-archive` on macOS, `%LOCALAPPDATA%/resonant-archive` on Windows (the `.env` above goes in its `docker` folder there); `RESONANT_ARCHIVE_DATA_DIR` or
   `RESONANT_EMBEDDER_MODEL_DIR` override it).
 
 ## What leaves your machine
@@ -109,4 +109,4 @@ The mirror and the archive hold the full record of what you and your AI said. Th
 
 To remove everything: delete the mirror folder, run `docker compose down -v` in the folder `init --docker` used
 (`~/.local/share/resonant-archive/docker` unless you chose `--project-dir`; it removes the volume), and
-delete `~/.config/resonant-archive` and the data folder above. Nothing is held anywhere else.
+delete `~/.config/resonant-archive` (Windows: `%LOCALAPPDATA%/resonant-archive`) and the data folder above. Nothing is held anywhere else.

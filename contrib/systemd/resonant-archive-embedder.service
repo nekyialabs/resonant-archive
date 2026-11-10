@@ -1,4 +1,5 @@
-# Optional example: run the local embed server as a systemd user service.
+# Optional example: run the local embed server as a systemd user service. Linux only: systemd does not exist on macOS
+# or Windows. There, run `resonant-archive serve` yourself, or skip it: the MCP server loads the model in its own process.
 #   mkdir -p ~/.config/systemd/user && cp resonant-archive-embedder.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now resonant-archive-embedder
 # Edit ExecStart if your python lives elsewhere (e.g. a venv path).
