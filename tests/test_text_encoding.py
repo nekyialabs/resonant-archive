@@ -90,3 +90,34 @@ def test_nexus_markdown_reads_crlf_and_a_bom(tmp_path):
     f = tmp_path / "chat.md"
     f.write_bytes(BOM8 + b"line one\r\nline two\r\n")
     assert nexus_markdown._read(f) == ["line one", "line two", ""]
+
+
+def _as_windows_wrote_it(root, how):
+    """Rewrite every .jsonl under ``root`` with a BOM and/or CRLF endings, in place."""
+    for f in root.rglob("*.jsonl"):
+        text = f.read_bytes().decode("utf-8")
+        f.write_bytes(ENCODINGS[how](text))
+
+
+@pytest.mark.parametrize("how", ["utf-8 + BOM", "utf-8, CRLF", "utf-8 + BOM, CRLF"])
+def test_importers_give_the_same_rows_whatever_the_line_endings_or_bom(tmp_path, how):
+    """The same session, as Windows might have written it (BOM, CRLF), imports to exactly the same rows."""
+    import collections
+
+    from resonant_archive import importers
+    from resonant_archive.importers.base import Options, Record
+
+    from . import synth
+
+    def rows(importer, path):
+        out = list(importers.get(importer).records(path, Options(), collections.Counter()))
+        return sorted((r.id, r.text) for r in out if isinstance(r, Record))
+
+    cc_plain = synth.claude_code_session(tmp_path / "plain" / "cc", project="C--Users-someone-demo")
+    mirror_plain = synth.mirror_tree(tmp_path / "plain" / "mirror")
+    cc_win = synth.claude_code_session(tmp_path / "win" / "cc", project="C--Users-someone-demo")
+    mirror_win = synth.mirror_tree(tmp_path / "win" / "mirror")
+    _as_windows_wrote_it(tmp_path / "win", how)
+
+    assert rows("claude_code", cc_win.parent.parent) == rows("claude_code", cc_plain.parent.parent) != []
+    assert rows("chronicle_mirror", mirror_win) == rows("chronicle_mirror", mirror_plain) != []
