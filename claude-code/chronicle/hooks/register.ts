@@ -112,14 +112,15 @@ export function validZone(z: string): boolean {
   try { new Intl.DateTimeFormat('en-GB', { timeZone: z }); return true } catch { return false }
 }
 
-function expandHome(p: string, home: string | undefined): string {
-  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return home ? `${home.replace(/[\\/]+$/, '')}${p.slice(1)}` : ''
+function expandHome(p: string, home: string | undefined, windows: boolean): string {
+  // `~\dir` and backslash trimming are Windows spellings only: on Linux and macOS a backslash is an ordinary character
+  if (p === '~' || p.startsWith('~/') || (windows && p.startsWith('~\\'))) return home ? `${home.replace(windows ? /[\\/]+$/ : /\/+$/, '')}${p.slice(1)}` : ''
   return p
 }
 
 // Pure. Never throws: the mod must not fail to load over its settings. Wrong types fall back to the default, unknown
 // keys are listed in `ignored`. The new nested keys win over the older flat ones when both are present.
-export function normalizeConfig(raw: unknown, home?: string): Cfg {
+export function normalizeConfig(raw: unknown, home?: string, windows = false): Cfg {
   const r = rec(raw)
   const compaction = rec(r.compaction), memories = rec(r.memories), mirrorC = rec(r.mirror), squish = rec(r.squish)
   const line = rec(r.contextLine), tools = rec(r.tools), archive = rec(r.archive), names = rec(r.names)
@@ -128,11 +129,11 @@ export function normalizeConfig(raw: unknown, home?: string): Cfg {
   const warnAt = pickPct(line.warnAt, 75)
   const urgent = pickPct(line.urgentAt, 90)
   const command = Array.isArray(archive.command) ? archive.command.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
-  const root = expandHome(pickStr(r.archiveRoot, DEFAULT_ROOT).trim() || DEFAULT_ROOT, home)
+  const root = expandHome(pickStr(r.archiveRoot, DEFAULT_ROOT).trim() || DEFAULT_ROOT, home, windows)
   const min = pickNum(firstDefined(memories.chunkMinTokens, r.chunkMinTokens), DEFAULT_CHUNK_MIN)
   const zone = pickStr(r.timezone, '').trim()
   return {
-    archiveRoot: root.replace(/[\\/]+$/, '') || root,
+    archiveRoot: root.replace(windows ? /[\\/]+$/ : /\/+$/, '') || root,
     timezone: validZone(zone) ? zone : '',
     names: { user: pickStr(names.user, '').trim() || 'You', agent: pickStr(names.agent, '').trim() || 'Assistant' },
     mirrorEnabled: pickBool(mirrorC.enabled, true),
@@ -167,6 +168,8 @@ let rgBin = 'rg'
 // Windows host: the mirror is appended through PowerShell and the archive is listed, searched and read through $.fs
 // (no sh, rg or cat there). Set from the environment the first time the settings are read.
 let isWin = false
+// The archive root without its trailing separators: only '/' on Linux and macOS, '/' and '\' on Windows.
+const trimRoot = (p: string): string => p.replace(isWin ? /[\\/]+$/ : /\/+$/, '')
 let memoriesOn = false
 let recallNames: readonly string[] = [RECALL_TOOL]
 let zoneToStore: string | undefined // set when the archive has no .chronicle.json yet: flush writes it once
@@ -193,7 +196,7 @@ async function cfgOf($: EngineInterface): Promise<Cfg> {
   // Git Bash) that PowerShell and $.fs cannot open, so it is only the fallback there.
   try { home = os === 'Windows_NT' ? ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))) : ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))) } catch {}
   isWin = os === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(home ?? '')
-  const cfg = normalizeConfig(raw, home)
+  const cfg = normalizeConfig(raw, home, isWin)
   if (cfg.ignored.length) { try { $.ui.log(`chronicle: unknown settings ignored: ${cfg.ignored.join(', ')}`, { to: 'debug' }) } catch {} }
   // The day folders are named in one zone for the life of an archive: the one it recorded, unless the settings name one.
   let stored = ''
@@ -615,39 +618,112 @@ const WIN_READS: readonly (readonly [string, RegExp])[] = ([
   ['reg', String.raw`\breg(?:\.exe)?\s+(?:query|export|save)\b[^\n]{0,200}?(?:[\\/]environment\b|winlogon|[\\/](?:sam|security)\b|passw|secret|token|credential|api[_ -]?key|private)`],
   ['hk', String.raw`\bhk(?:cu|lm|ey_current_user|ey_local_machine):?[\\/](?:[^\s"']{0,200}?[\\/])?environment\b`],
 ] as [string, string][]).map(([needle, src]) => [needle, new RegExp(src, 'i')] as const)
-// A PowerShell script passed as -EncodedCommand (base64 of UTF-16LE): decoded and looked at again.
-const PS_ENCODED = /(?<![\w-])-e(?:c|nc|ncodedcommand)?\s+([A-Za-z0-9+/]{16,}={0,2})(?![\w+/=])/gi
-
 function windowsSecretRead(cmd: string): boolean {
   const low = cmd.toLowerCase()
   return WIN_READS.some(([needle, rx]) => low.includes(needle) && rx.test(cmd))
 }
 
-// The scripts hidden in `powershell -EncodedCommand <base64>` (at most 8, each up to 200 KB). The module has neither
-// Buffer nor atob, so the base64 is decoded by hand (the twin of b64utf16le, further up, in the other direction).
-function decodedPowershell(cmd: string): string[] {
-  const low = cmd.toLowerCase()
-  if (!low.includes('powershell') && !low.includes('pwsh')) return []
+// A PowerShell invocation (powershell, pwsh, with or without .exe or a path) and what it was asked to run. The gate fails
+// closed: a payload that cannot be decoded, is too big, is too many, or is not UTF-16LE text, and a command line that
+// cannot be parsed, withhold the call; they are never skipped. The twin of _powershell_withholds in secret_sources.py.
+const PS_PROG = /(?<![\w-])(?:powershell|pwsh)(?:\.exe)?(?=\s|$)/gi
+const PS_ARG = /\s*("[^"]*"|'[^']*'|\S+)/y
+const PS_DASHES = '-/–—―' // PowerShell also takes an en dash, an em dash and a horizontal bar
+const PS_MAX_PAYLOAD_CHARS = 270_000 // base64 characters in one -EncodedCommand
+const PS_MAX_DECODED_BYTES = 200_000
+const PS_MAX_PAYLOADS = 8
+const PS_MAX_DEPTH = 3 // scripts inside scripts
+
+// 'enc' for -EncodedCommand, 'cmd' for -Command, else undefined. PowerShell accepts any unambiguous prefix (-e, -en, -enc,
+// ... and the alias -ec; -c, -co, -com, ...), a colon before the value (-enc:XYZ), `/` for `-` and any case.
+function psFlag(tok: string): 'enc' | 'cmd' | undefined {
+  if (tok.length < 2 || !PS_DASHES.includes(tok[0]!)) return undefined
+  const name = tok.slice(1).split(':')[0]!.toLowerCase()
+  if (!name) return undefined
+  if (name === 'ec' || 'encodedcommand'.startsWith(name)) return 'enc'
+  if ('command'.startsWith(name)) return 'cmd'
+  return undefined
+}
+
+function psArg(s: string, pos: number): { tok: string; end: number } | undefined {
+  PS_ARG.lastIndex = pos
+  const m = PS_ARG.exec(s)
+  return m ? { tok: m[1]!, end: PS_ARG.lastIndex } : undefined
+}
+
+// Strict base64 of UTF-16LE text, as the Python twin reads it: the alphabet only, padding at the end and correct, an even
+// number of bytes, no lone surrogate. Undefined when it is any less than that; the module has neither Buffer nor atob, so
+// the decoding is done by hand (the other direction of b64utf16le, further up).
+function decodeUtf16leBase64(b64: string): string | undefined | 'toolong' {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) return undefined
   const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  const out: string[] = []
-  PS_ENCODED.lastIndex = 0
-  for (let m = PS_ENCODED.exec(cmd); m; m = PS_ENCODED.exec(cmd)) {
-    const b64 = m[1]!.slice(0, 270_000)
-    if (b64.length % 4 !== 0) continue // not valid base64 (the Python twin refuses it too)
-    const bytes: number[] = []
-    let bits = 0, acc = 0
-    for (const ch of b64) {
-      if (ch === '=') break
-      acc = ((acc << 6) | T.indexOf(ch)) & 0xffffff; bits += 6
-      if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 0xff) }
-    }
-    const n = Math.min(bytes.length, 200_000)
-    let s = ''
-    for (let i = 0; i + 1 < n; i += 2) s += String.fromCharCode(bytes[i]! | (bytes[i + 1]! << 8))
-    out.push(s)
-    if (out.length === 8) break
+  const bytes: number[] = []
+  let bits = 0, acc = 0
+  for (const ch of b64) {
+    if (ch === '=') break
+    acc = ((acc << 6) | T.indexOf(ch)) & 0xffffff; bits += 6
+    if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 0xff) }
   }
-  return out
+  if (bytes.length > PS_MAX_DECODED_BYTES) return 'toolong'
+  if (bytes.length % 2 !== 0) return undefined
+  const units: number[] = []
+  for (let i = 0; i < bytes.length; i += 2) units.push(bytes[i]! | (bytes[i + 1]! << 8))
+  let s = ''
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i]!
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const v = units[i + 1]
+      if (v === undefined || v < 0xdc00 || v > 0xdfff) return undefined
+      s += String.fromCharCode(u, v); i++
+    } else if (u >= 0xdc00 && u <= 0xdfff) return undefined
+    else s += String.fromCharCode(u)
+  }
+  return s
+}
+
+function powershellWithholds(name: unknown, cmd: string, depth: number): boolean {
+  const low = cmd.toLowerCase()
+  if (!low.includes('powershell') && !low.includes('pwsh')) return false
+  const starts = [...cmd.matchAll(PS_PROG)]
+  let payloads = 0
+  for (let i = 0; i < starts.length; i++) {
+    const prog = starts[i]!
+    const end = i + 1 < starts.length ? starts[i + 1]!.index! : cmd.length
+    const rest = cmd.slice(prog.index! + prog[0].length, end)
+    let pos = 0
+    for (;;) {
+      const a = psArg(rest, pos)
+      if (!a) break
+      const tok = a.tok
+      pos = a.end
+      if ((tok[0] === '"' || tok[0] === "'") && (tok.length < 2 || tok[tok.length - 1] !== tok[0])) return true // unterminated quote before the flag
+      const kind = psFlag(tok)
+      if (!kind) continue
+      const inline = tok.includes(':') ? tok.slice(tok.indexOf(':') + 1) : undefined
+      if (depth + 1 > PS_MAX_DEPTH) return true
+      if (kind === 'cmd') {
+        const inner = trimQuotes(inline !== undefined ? inline + rest.slice(pos) : rest.slice(pos))
+        if (!inner) return true
+        if (secretBearing(name, { command: inner }, depth + 1)) return true
+        break // everything after -Command is the command
+      }
+      // -EncodedCommand: the payload is the value after a colon, or the next argument
+      let payload: string
+      if (!inline) {
+        const nxt = psArg(rest, pos)
+        if (!nxt) return true
+        payload = nxt.tok
+        pos = nxt.end
+      } else payload = inline
+      payload = payload.replace(/^["'();&| ]+|["'();&| ]+$/g, '') // quotes and shell punctuation around it; base64 has none
+      payloads++
+      if (payloads > PS_MAX_PAYLOADS || !payload || payload.length > PS_MAX_PAYLOAD_CHARS) return true
+      const script = decodeUtf16leBase64(payload)
+      if (script === undefined || script === 'toolong') return true
+      if (secretBearing(name, { command: script }, depth + 1)) return true
+    }
+  }
+  return false
 }
 const SEGMENTS = /[;&|\n]+|\$\(|`/
 const TOKENS = /[\s'"`;&|()<>=]+/
@@ -722,7 +798,7 @@ export function secretBearing(name: unknown, input: unknown, depth = 0): boolean
   const cmd = typeof o.command === 'string' ? o.command : ''
   if (cmd) {
     if (ENV_READ.test(cmd) || windowsSecretRead(cmd)) return true
-    if (depth < 2 && decodedPowershell(cmd).some(dec => secretBearing(name, { command: dec }, depth + 1))) return true
+    if (powershellWithholds(name, cmd, depth)) return true
     for (const seg of cmd.split(SEGMENTS)) {
       if (segmentSecret(seg)) return true
       const t = trimSegment(seg)
@@ -1196,7 +1272,7 @@ async function currentSid($: EngineInterface): Promise<string> {
 // The whole recall. Returns the text the assistant reads. Throws only on an engine failure; the tool hook catches that.
 async function recall($: EngineInterface, input: RecallInput): Promise<string> {
   const cfg = await cfgOf($)
-  const root = cfg.archiveRoot.replace(/[\\/]+$/, '')
+  const root = trimRoot(cfg.archiveRoot)
   if (!cfg.mirrorEnabled) return 'recall: the mirror is switched off (mirror.enabled is false in chronicle.json), so there is no session record to search.'
   if (!root) return 'recall: no archive folder (archiveRoot starts with ~ and HOME is not set).'
   // Rows from the last few seconds are still in the buffer: write them first so they can be found.
@@ -2451,7 +2527,7 @@ async function assemblyFor($: EngineInterface, cfg: Cfg, msgs: readonly SessionM
     const off = assemblyAllowed(cfg.assembleWithMemories, trigger)
     if (off) return off
     if (!sessionId || sessionId === 'unknown') return 'no session id'
-    const ev = await memoryEvidence($, cfg.archiveRoot.replace(/[\\/]+$/, ''), sessionId)
+    const ev = await memoryEvidence($, trimRoot(cfg.archiveRoot), sessionId)
     if (typeof ev === 'string') return ev
     return planAssembly(msgs, cut, ev.mems, ev.seq, {
       gapRawMax: posInt(cfg.gapRawMaxTokens, DEFAULT_GAP_RAW_MAX),

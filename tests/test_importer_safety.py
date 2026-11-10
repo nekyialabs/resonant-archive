@@ -388,3 +388,55 @@ def test_pipeline_rechecks_a_unit_a_plugin_listed(dsn, tmp_path):
 
     rep = pipeline.run_import(Sloppy(), link.parent, dsn=dsn)
     assert rep.units_skipped == 1 and rep.importer_stats["skipped symlink"] == 1 and rep.ok
+
+
+# ---------------------------------------------------------------- -EncodedCommand cannot be used to get past the gate
+
+def _enc(script: str) -> str:
+    import base64
+
+    return base64.b64encode(script.encode("utf-16-le")).decode()
+
+
+def test_an_encoded_payload_over_the_size_limit_is_withheld_not_skipped():
+    padded = _enc("Get-ChildItem Env:" + " " * 210_000)        # 420 KB of UTF-16, the listing hidden behind the padding
+    assert len(padded) > 270_000
+    assert secret_bearing("Bash", {"command": "powershell -enc " + padded})
+    just_under = _enc("Get-Date" + " " * 90_000)               # an ordinary big script is inspected, and is fine
+    assert not secret_bearing("Bash", {"command": "powershell -enc " + just_under})
+    decoded_over = _enc("x" * 100_001)                          # 200,002 bytes: over the decoded limit, under the text limit
+    assert secret_bearing("Bash", {"command": "powershell -enc " + decoded_over})
+
+
+def test_a_ninth_encoded_payload_is_withheld_not_skipped():
+    benign = _enc("Get-Date")
+    eight = "; ".join(f"powershell -enc {benign}" for _ in range(8))
+    assert not secret_bearing("Bash", {"command": eight})
+    assert secret_bearing("Bash", {"command": eight + "; powershell -enc " + _enc("Get-ChildItem Env:")})
+    assert secret_bearing("Bash", {"command": eight + "; powershell -enc " + benign})   # the count itself withholds
+
+
+@pytest.mark.parametrize("flag", ["-e", "-ec", "-en", "-enc", "-enco", "-EncodedCommand", "/enc", "-ENC", "-enc:", "-EncodedCommand:", "/e:"])
+def test_every_spelling_of_the_encoded_flag_is_inspected(flag):
+    secret, ordinary = _enc("Get-ChildItem Env:"), _enc("Get-Date")
+    glue = "" if flag.endswith(":") else " "
+    assert secret_bearing("Bash", {"command": f"powershell {flag}{glue}{secret}"})
+    assert not secret_bearing("Bash", {"command": f"powershell {flag}{glue}{ordinary}"})
+
+
+def test_a_nested_script_depth_limit_withholds():
+    script = "Get-Date"
+    for _ in range(6):
+        script = "powershell -enc " + _enc(script)
+    assert secret_bearing("Bash", {"command": script})
+
+
+@pytest.mark.parametrize("cmd", [
+    'powershell -ExecutionPolicy Bypass -Command "printenv"',
+    'pwsh -NoLogo -ExecutionPolicy Bypass -Command "compgen -v"',
+    'powershell -NoProfile -WindowStyle Hidden -com "env"',
+    "powershell /command printenv",
+    "powershell -Command:printenv",
+])
+def test_command_is_found_after_value_taking_flags(cmd):
+    assert secret_bearing("Bash", {"command": cmd})

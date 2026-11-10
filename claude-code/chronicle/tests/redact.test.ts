@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { redact, secretBearing, blockText, trimQuotes, queuedPrompt } from '../hooks/register'
+import { redact, secretBearing, blockText, trimQuotes, queuedPrompt, b64utf16le } from '../hooks/register'
 
 // Every key below is obviously fake and built from repeated characters.
 const A20 = 'A'.repeat(20)
@@ -468,6 +468,34 @@ const SECRET_CALLS: [string, unknown][] = [
   ["Bash", {"command": "type .env"}],
   ["Bash", {"command": "findstr /s /i password *.config"}],
   ["Bash", {"command": "C:\\Windows\\System32\\findstr.exe /s token *.json"}],
+  ["Bash", {"command": "powershell -e RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enco RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -encodedcomman RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -EncodedCommand RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -EncodedCommand:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell /enc RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell /e:RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "POWERSHELL.EXE -ENC RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "pwsh -NoProfile -ec RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -NoProfile -ExecutionPolicy Bypass -en RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA"}],
+  ["Bash", {"command": "powershell -enc \"RwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEUAbgB2ADoA\""}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -Command \"printenv\""}],
+  ["Bash", {"command": "pwsh -NoLogo -ExecutionPolicy Bypass -Command \"compgen -v\""}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -c printenv"}],
+  ["Bash", {"command": "powershell -NoProfile -WindowStyle Hidden -com env"}],
+  ["Bash", {"command": "powershell /command env"}],
+  ["Bash", {"command": "powershell -Command:printenv"}],
+  ["Bash", {"command": "powershell -NoLogo -InputFormat Text -OutputFormat Text -Command \"gci env:\""}],
+  ["Bash", {"command": "powershell -enc !!!not-base64!!!"}],
+  ["Bash", {"command": "powershell -enc QQ=="}],
+  ["Bash", {"command": "powershell -enc"}],
+  ["Bash", {"command": "powershell -EncodedCommand:"}],
+  ["Bash", {"command": "powershell \"unterminated -Command Get-Date"}],
+  ["Bash", {"command": "powershell -Command"}],
 ]
 const ORDINARY_CALLS: [string, unknown][] = [
   ["Read", {"file_path": "/app/src/environment.ts"}],
@@ -535,6 +563,14 @@ const ORDINARY_CALLS: [string, unknown][] = [
   ["Bash", {"command": "echo %USERPROFILE%"}],
   ["Bash", {"command": "netsh wlan show interfaces"}],
   ["Bash", {"command": "findstr /s TODO *.ts"}],
+  ["Bash", {"command": "powershell -ExecutionPolicy Bypass -Command \"Get-Date\""}],
+  ["Bash", {"command": "powershell -NoLogo -c \"ls src\""}],
+  ["Bash", {"command": "pwsh -enc:RwBlAHQALQBEAGEAdABlAA=="}],
+  ["Bash", {"command": "powershell /c \"dir\""}],
+  ["Bash", {"command": "powershell -File build.ps1 -Verbose"}],
+  ["Bash", {"command": "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1"}],
+  ["Bash", {"command": "powershell -en RwBlAHQALQBEAGEAdABlAA=="}],
+  ["Bash", {"command": "powershell -NoProfile -EncodedCommand RwBlAHQALQBEAGEAdABlAA=="}],
 ]
 // SECRET-CASES-END
 
@@ -669,3 +705,48 @@ test('queuedPrompt gives what the old function gave', () => {
   cases.push('', '<system-reminder>', '</system-reminder>', `${HEAD}\n`, `${HEAD}\n${NOTE}`, `${HEAD}\n\n${NOTE}`)
   for (const c of cases) expect(queuedPrompt(c)).toEqual(oldQueuedPrompt(c))
 })
+
+// ---- -EncodedCommand cannot be used to get past the gate (the same cases as tests/test_importer_safety.py) ----
+const enc = (s: string): string => b64utf16le(s)
+
+test('an encoded payload over the size limit is withheld, not skipped', () => {
+  const padded = enc('Get-ChildItem Env:' + ' '.repeat(210_000))
+  expect(padded.length).toBeGreaterThan(270_000)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + padded })).toBe(true)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + enc('Get-Date' + ' '.repeat(90_000)) })).toBe(false)
+  expect(secretBearing('Bash', { command: 'powershell -enc ' + enc('x'.repeat(100_001)) })).toBe(true) // 200,002 bytes
+})
+
+test('a ninth encoded payload is withheld, not skipped', () => {
+  const benign = enc('Get-Date')
+  const eight = Array.from({ length: 8 }, () => `powershell -enc ${benign}`).join('; ')
+  expect(secretBearing('Bash', { command: eight })).toBe(false)
+  expect(secretBearing('Bash', { command: eight + '; powershell -enc ' + enc('Get-ChildItem Env:') })).toBe(true)
+  expect(secretBearing('Bash', { command: eight + '; powershell -enc ' + benign })).toBe(true)
+})
+
+for (const flag of ['-e', '-ec', '-en', '-enc', '-enco', '-EncodedCommand', '/enc', '-ENC', '-enc:', '-EncodedCommand:', '/e:']) {
+  test(`the encoded flag ${flag} is inspected`, () => {
+    const glue = flag.endsWith(':') ? '' : ' '
+    expect(secretBearing('Bash', { command: `powershell ${flag}${glue}${enc('Get-ChildItem Env:')}` })).toBe(true)
+    expect(secretBearing('Bash', { command: `powershell ${flag}${glue}${enc('Get-Date')}` })).toBe(false)
+  })
+}
+
+test('scripts inside scripts past the depth limit are withheld', () => {
+  let script = 'Get-Date'
+  for (let i = 0; i < 6; i++) script = 'powershell -enc ' + enc(script)
+  expect(secretBearing('Bash', { command: script })).toBe(true)
+})
+
+for (const cmd of [
+  'powershell -ExecutionPolicy Bypass -Command "printenv"',
+  'pwsh -NoLogo -ExecutionPolicy Bypass -Command "compgen -v"',
+  'powershell -NoProfile -WindowStyle Hidden -com "env"',
+  'powershell /command printenv',
+  'powershell -Command:printenv',
+]) {
+  test(`-Command is found after value-taking flags: ${cmd}`, () => {
+    expect(secretBearing('Bash', { command: cmd })).toBe(true)
+  })
+}
