@@ -18,5 +18,6 @@ paths = [
   '''^tests/test_redact_coverage\.py$''',
   '''^tests/test_private_strip_lint\.py$''',
   '''^tests/test_importer_safety\.py$''',
+  '''^tests/test_text_encoding\.py$''',
   '''^claude-code/chronicle/tests/redact\.test\.ts$''',
 ]
