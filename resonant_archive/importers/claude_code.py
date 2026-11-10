@@ -127,7 +127,7 @@ def _looks_like_transcript(path: Path) -> bool:
     if safety.problem(path):
         return False
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             for n, line in safety.iter_lines(fh):
                 if n >= 40:
                     break
@@ -175,7 +175,7 @@ class ClaudeCode(Importer):
         tool_names: dict[str, str] = {}
         secret_calls: set[str] = set()   # ids of tool calls whose result is withheld
         out: list[Record] = []
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             for ln, line in safety.iter_lines(fh, stats):
                 try:
                     d = json.loads(line)

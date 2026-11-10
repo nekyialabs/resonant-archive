@@ -26,6 +26,8 @@ from typing import Any, Iterable
 
 import frontmatter
 
+from . import textio
+
 # Default chunking parameters sized for all-MiniLM-L6-v2 (512 token limit).
 # 1500 chars leaves comfortable headroom under the tokenizer cap.
 DEFAULT_MAX_CHARS = 1500
@@ -230,8 +232,7 @@ def parse_file(
     file_path: Path, relative_path: str | None = None
 ) -> ParsedFile:
     """Read and parse a single text file, extracting frontmatter if present."""
-    raw = file_path.read_text(encoding="utf-8", errors="replace")
-    content = raw.replace("\r\n", "\n").replace("\r", "\n")
+    content = textio.read_text(file_path)  # a BOM (Notepad) or UTF-16 (PowerShell) is decoded, CRLF read as LF
 
     body = content
     fm_data: dict[str, Any] = {}

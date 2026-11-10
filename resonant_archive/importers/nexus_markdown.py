@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from typing import Iterator
 
+from .. import textio
 from ..timeutil import parse_iso, wall_to_utc, zone
 from . import safety
 from .base import Importer, Options, Record, Unit
@@ -108,7 +109,7 @@ def flavour(lines: list[str]) -> str | None:
 
 
 def _read(path: Path) -> list[str]:
-    return path.read_text(encoding="utf-8", errors="replace").split("\n")
+    return textio.read_text(path).split("\n")
 
 
 def _gpt_time(s: str, tz) -> dt.datetime | None:

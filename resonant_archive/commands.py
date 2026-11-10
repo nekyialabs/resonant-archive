@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import config, db, fsutil, importers, pipeline
+from . import config, db, fsutil, importers, pipeline, textio
 from .importers.base import Options
 
 ENV_PASSWORD = "POSTGRES_PASSWORD"
@@ -60,7 +60,7 @@ def weak_password(pw: str | None) -> bool:
 
 def _read_env(env: Path) -> dict[str, str]:
     try:
-        text = env.read_text(encoding="utf-8")
+        text = textio.read_text(env)
     except OSError:
         return {}
     return dict(line.split("=", 1) for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#"))

@@ -21,6 +21,8 @@ import os
 import re
 from typing import Iterable
 
+from . import textio
+
 #: Bump when the patterns change in a way that should re-redact what is already imported: the import pipeline mixes
 #: it into every unit's hash, so an unchanged input is read again once.
 REDACTION_VERSION = 2
@@ -196,8 +198,7 @@ def load_known(paths: Iterable[str], json_configs: Iterable[str] = ()) -> list[s
             files = [p]
         for f in files:
             try:
-                with open(f, errors="ignore") as fh:
-                    text = fh.read()
+                text = textio.read_text(f)   # UTF-8, with or without a BOM, or UTF-16: what Windows tools write
             except OSError:
                 continue
             for m in re.finditer(r"(?m)^\s*[A-Za-z0-9_]+\s*[=:]\s*[\"']?([^\s\"'#]{12,})", text):
@@ -206,7 +207,7 @@ def load_known(paths: Iterable[str], json_configs: Iterable[str] = ()) -> list[s
                 vals.add(m.group(0))
     for p in json_configs:
         try:
-            with open(os.path.expanduser(str(p))) as fh:
+            with open(os.path.expanduser(str(p)), encoding="utf-8-sig") as fh:
                 cfg = json.load(fh)
         except (OSError, ValueError):
             continue
