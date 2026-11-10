@@ -12,6 +12,7 @@ from resonant_archive import commands, config, db, importers, pipeline
 from resonant_archive.importers.base import Importer, Options, Record, Unit
 
 from . import synth
+from .permcheck import is_private
 
 
 def q(dsn, sql, *args):
@@ -260,7 +261,7 @@ def test_import_works_through_a_readonly_doctor_free_flow(dsn):
 
 def test_write_env_file_is_private_and_stable(tmp_path):
     env, pw = commands.write_env_file(tmp_path)
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600 and len(pw) >= 24
+    assert is_private(env) and len(pw) >= 24
     again, pw2 = commands.write_env_file(tmp_path)
     assert pw2 == pw                                                   # an existing password is kept
     _, pw3 = commands.write_env_file(tmp_path, overwrite=True)

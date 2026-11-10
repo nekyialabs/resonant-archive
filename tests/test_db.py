@@ -7,6 +7,8 @@ import pytest
 
 from resonant_archive import config, db
 
+from .permcheck import is_private
+
 
 def test_init_creates_schema_and_is_idempotent(blank_dsn):
     first = db.init(blank_dsn)
@@ -158,7 +160,7 @@ def test_config_resolution_order(tmp_path, monkeypatch):
     with pytest.raises(config.ConfigError):
         config.resolve_dsn()
     path = config.write_dsn("postgresql://a:b@h/d", readonly_dsn="postgresql://r:s@h/d")
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert is_private(path)
     assert config.resolve_dsn() == "postgresql://a:b@h/d"
     assert config.resolve_dsn(readonly=True) == "postgresql://r:s@h/d"
     monkeypatch.setenv(config.ENV_DSN, "postgresql://env@h/d")

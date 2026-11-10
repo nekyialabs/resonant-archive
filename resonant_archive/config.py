@@ -20,6 +20,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from . import fsutil
+
 APP = "resonant-archive"
 
 ENV_DSN = "RESONANT_ARCHIVE_DSN"
@@ -109,7 +111,7 @@ def _toml_str(value: str) -> str:
 
 
 def write_dsn(dsn: str | None, readonly_dsn: str | None = None, path: Path | None = None) -> Path:
-    """Write (or update) the [database] section of the config file, mode 0600. Other sections are kept."""
+    """Write (or update) the [database] section of the config file, owner-only (mode 0600; an ACL on Windows). Other sections are kept."""
     p = path or config_file()
     existing = load_file(p)
     db = dict(existing.get("database", {}))
@@ -130,11 +132,7 @@ def write_dsn(dsn: str | None, readonly_dsn: str | None = None, path: Path | Non
             for k, v in body.items():
                 lines.append(f"{k} = {_toml_value(v)}")
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = p.with_name(p.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines).lstrip("\n") + "\n")
-    os.replace(tmp, p)
+    fsutil.write_private_text(p, "\n".join(lines).lstrip("\n") + "\n")
     return p
 
 

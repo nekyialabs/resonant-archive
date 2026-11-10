@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import psycopg
@@ -14,6 +15,7 @@ from typer.testing import CliRunner
 from resonant_archive import cli, commands, config
 
 from . import synth
+from .permcheck import is_private
 
 ROOT = Path(__file__).resolve().parent.parent
 runner = CliRunner()
@@ -74,8 +76,7 @@ def test_init_saves_dsn_and_reports_missing_database(blank_dsn, monkeypatch):
     res = runner.invoke(cli.app, ["init", "--dsn", blank_dsn])
     assert res.exit_code == 0 and "saved the database address" in res.output
     assert config.resolve_dsn() == blank_dsn
-    mode = config.config_file().stat().st_mode & 0o777
-    assert mode == 0o600
+    assert is_private(config.config_file())
     monkeypatch.delenv("RESONANT_ARCHIVE_DSN", raising=False)
     shutil.rmtree(config.config_dir())
     res = runner.invoke(cli.app, ["stats"])
@@ -87,7 +88,7 @@ def test_init_docker_writes_env_and_prints_steps(tmp_path, monkeypatch):
     res = runner.invoke(cli.app, ["init", "--docker", "--project-dir", str(tmp_path)])
     assert res.exit_code == 0, res.output
     env = tmp_path / ".env"
-    assert env.stat().st_mode & 0o777 == 0o600
+    assert is_private(env)
     password = dict(l.split("=", 1) for l in env.read_text().splitlines())["POSTGRES_PASSWORD"]
     assert len(password) >= 24 and password not in res.output  # the password is never printed
     assert "docker compose up -d --wait" in res.output and "resonant-archive init" in res.output
@@ -209,9 +210,9 @@ def test_init_docker_defaults_to_the_data_folder_not_the_current_directory(tmp_p
     assert res.exit_code == 0, res.output
     assert list(here.iterdir()) == []                                     # nothing written next to the user's files
     target = config.data_dir() / "docker"
-    assert (target / ".env").stat().st_mode & 0o777 == 0o600
+    assert is_private(target / ".env")
     assert (target / "docker-compose.yml").exists()
-    assert target.stat().st_mode & 0o777 == 0o700
+    assert is_private(target, directory=True)
 
 
 @pytest.mark.parametrize("old", ["change-me-to-a-long-random-string", "short", "", "Password123456789"])
@@ -231,8 +232,9 @@ def test_a_good_password_is_kept_and_a_loose_mode_is_tightened(tmp_path):
     good = "Zq8vN2pXk4TjR7mWc1LsHd9B"
     env.write_text(f"POSTGRES_PASSWORD={good}\nRESONANT_ARCHIVE_PORT=54329\n")
     env.chmod(0o644)
+    assert not is_private(env) or sys.platform == "win32"   # Windows: the file carries its folder's ACL, not 0644
     _, pw = commands.write_env_file(tmp_path)
-    assert pw == good and env.stat().st_mode & 0o777 == 0o600
+    assert pw == good and is_private(env)
 
 
 def test_weak_password_rules():

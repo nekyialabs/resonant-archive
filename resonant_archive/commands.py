@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import config, db, importers, pipeline
+from . import config, db, fsutil, importers, pipeline
 from .importers.base import Options
 
 ENV_PASSWORD = "POSTGRES_PASSWORD"
@@ -83,17 +83,12 @@ def write_env_file(project_dir: Path, port: int = config.DEFAULT_PORT, *, overwr
     if env.exists() and not overwrite:
         values = _read_env(env)
         if not weak_password(values.get(ENV_PASSWORD)):
-            os.chmod(env, 0o600)
+            fsutil.make_private(env)
             return env, values[ENV_PASSWORD]
         other = {k: v for k, v in values.items() if k != ENV_PASSWORD}
     other.setdefault(ENV_PORT, str(port))
     password = secrets.token_urlsafe(24)
-    tmp = env.with_name(env.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"{ENV_PASSWORD}={password}\n" + "".join(f"{k}={v}\n" for k, v in other.items()))
-    os.replace(tmp, env)
-    os.chmod(env, 0o600)
+    fsutil.write_private_text(env, f"{ENV_PASSWORD}={password}\n" + "".join(f"{k}={v}\n" for k, v in other.items()))
     return env, password
 
 
@@ -108,7 +103,7 @@ def prepare_project_dir(project_dir: Path) -> Path:
     project_dir = Path(project_dir).expanduser()
     if not project_dir.exists():
         project_dir.mkdir(parents=True, mode=0o700)
-        os.chmod(project_dir, 0o700)
+        fsutil.make_private(project_dir, directory=True)
     return project_dir.resolve()
 
 
